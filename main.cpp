@@ -1,21 +1,60 @@
 #define OLC_PGE_APPLICATION
 #include "olcPixelGameEngine.h"
 
-static const int nxCells = 120;
-static const int nyCells = 108;
+static const int sxCrenelOffset = 2;
 
-enum CastlePixel {
-	Empty,
-	DrySand,
-	Water,
-	DampSand
+static const int sxCrenelWidth = 2 * sxCrenelOffset; // _cc__cc_
+static const int syCrenelHeight = sxCrenelWidth; // square crenels
+
+static const int syHalfcellHeight = 2 * syCrenelHeight;
+
+static const int sxCellWidth = 4 * sxCrenelOffset + 2 * sxCrenelWidth; // _cc__cc_
+static const int syCellHeight = 4 * syCrenelHeight; // must be multiple of four for crenellations
+
+static const int nxCells = 9;
+static const int nyCells = 9;
+
+static const int sxCellsOffset = sxCellWidth; // non-build area on left edge for trees, cliffs etc.
+
+static const int sxScreenWidth = sxCellsOffset + sxCellWidth * nxCells;
+static const int syBeachMax = syCellHeight * nyCells;
+static const int syBottom = 12;
+static const int syScreenHeight = syBeachMax + syCellHeight;
+
+static const int sxPlayerWidth = 3 * sxCrenelOffset;
+static const int syPlayerHeight = 6 * sxCrenelOffset;
+static const float sxPlayerSpeed = float(2 * sxCellWidth);
+static const float syPlayerSpeed = float(2 * syCellHeight);
+static const float syPlayerFallSpeed = float(4 * syCellHeight);
+
+static const int sxLadderOffset = sxCrenelOffset + sxCrenelWidth - 1;
+
+static const olc::Pixel brown = olc::Pixel(128, 0, 64);
+
+enum ActionState {
+	Idle,
+	GettingSand,
+	GettingWater,
+	GettingWood,
+	PouringSand,
+	PouringWater,
+	SettingLadder
 };
-void swap(CastlePixel grid[nyCells][nxCells], int x1, int y1, int x2, int y2) {
-	CastlePixel t1 = grid[y1][x1];
-	CastlePixel t2 = grid[y2][x2];
-	grid[y2][x2] = t1;
-	grid[y1][x1] = t2;
-}
+
+enum CastleCell {
+	Empty,
+	HalfDry,
+	HalfDamp,
+	TopDry,
+	Complete
+};
+
+enum BucketState {
+	BucketEmpty,
+	BucketSand,
+	BucketWater,
+	BucketWood
+};
 
 class Game : public olc::PixelGameEngine
 {
@@ -26,61 +65,51 @@ public:
 	}
 
 private:
-	static const int syBeachMin = 96; // 0.8 of screen
-	static const int syBeachMax = 108; // 0.9 of screen
 
-	static const int sxCellWidth = 120/nxCells;
-	static const int syCellHeight = syBeachMax/nyCells;
-
-	const float sxPlayerWidth = 2.0 * sxCellWidth;
-	const float syPlayerHeight = 4.0 * syCellHeight;
-	float sxPlayerX = 60;
-	float syPlayerY = syBeachMax - syPlayerHeight;
-	int cxPlayerX;
-	int cyPlayerY;
+	float sxPlayerX = 60.0f;
+	float syPlayerY = float(syBeachMax - 1);
 
 	bool raining = false;
-	float rainCharge = 0.0;
+	float rainCharge = 0.0f;
 	std::vector<float> wxRaindropsX;
 	std::vector<float> wyRaindropsY;
-	const float rainRate = 50.0;
-	const float rainFallSpeed = 2.0;
-	float rainParticleCharge = 0.0;
-	const float rainParticleRate = 10.0;
+	const float rainRate = 50.0f;
+	const float rainFallSpeed = 2.0f;
 
 	bool wind = false;
-	const float windSpeed = -1.0;
-	const float wxMaxRainX = 1.0 - windSpeed / rainFallSpeed;
+	const float windSpeed = -1.0f;
+	const float wxMaxRainX = 1.0f - windSpeed / rainFallSpeed;
 
 	bool tide = false;
-	float wySeaLevel = 1.0;
-	const float wdySeaRiseRate = 1.0 / 120.0;
+	float wySeaLevel = 1.0f;
+	const float wdySeaRiseRate = 1.0f / 120.0f;
 
-	bool pouringSand;
-	float sandCharge = 0.0;
-	const float sandRate = 20.0;
+	ActionState actionState = Idle;
 
-	bool pouringWater;
-	float waterCharge = 0.0;
-	const float waterRate = 20.0;
+	CastleCell castleGrid[nyCells][nxCells];
 
-	bool pouringDampSand;
-	float dampSandCharge = 0.0;
-	const float dampSandRate = 20.0;
-
-	CastlePixel castleArea[nyCells][nxCells];
-
-	float fallCharge = 0.0;
-	const float fallRate = 40.0;
+	std::vector<olc::vi2d> ladders;
+	bool nearUpLadder = false;
+	bool nearDownLadder = false;
 
 	bool debug = false;
+
+	void drawCrenel(int sx, int sy) {
+		// fill one extra line dark yellow height to overwrite "lid" of the block
+		FillRect(sx + 1, sy - syCrenelHeight, sxCrenelWidth - 2, syCrenelHeight + 1, olc::DARK_YELLOW);
+		DrawLine(sx, sy - syCrenelHeight, sx, sy - 1, olc::VERY_DARK_YELLOW);
+		DrawLine(sx + sxCrenelWidth- 1, sy - syCrenelHeight, sx + sxCrenelWidth - 1, sy - 1, olc::VERY_DARK_YELLOW);
+		DrawLine(sx, sy - syCrenelHeight, sx + sxCrenelWidth - 1, sy - syCrenelHeight, olc::VERY_DARK_YELLOW);
+	}
+
+	BucketState bucket = BucketEmpty;
 
 public:
 	bool OnUserCreate() override
 	{
 		for (int y = 0; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				castleArea[y][x] = Empty;
+				castleGrid[y][x] = Empty;
 			}
 		}
 
@@ -91,213 +120,194 @@ public:
 	{
 		Clear(olc::CYAN);
 
-		if (GetKey(olc::Key::LEFT).bHeld) sxPlayerX -= 24.0f * fElapsedTime;
-		if (GetKey(olc::Key::RIGHT).bHeld) sxPlayerX += 24.0f * fElapsedTime;
-		if (GetKey(olc::Key::UP).bHeld) syPlayerY -= 24.0f * fElapsedTime;
-		if (GetKey(olc::Key::DOWN).bHeld) syPlayerY += 24.0f * fElapsedTime;
-		pouringSand = (GetKey(olc::Key::S).bHeld);
-		pouringWater = (GetKey(olc::Key::W).bHeld);
-		pouringDampSand = (GetKey(olc::Key::D).bHeld);
+		if (GetKey(olc::Key::LEFT).bHeld) sxPlayerX -= sxPlayerSpeed * fElapsedTime;
+		if (GetKey(olc::Key::RIGHT).bHeld) sxPlayerX += sxPlayerSpeed * fElapsedTime;
+		if (GetKey(olc::Key::UP).bHeld && nearUpLadder) syPlayerY -= syPlayerSpeed * fElapsedTime;
+		if (GetKey(olc::Key::DOWN).bHeld && nearDownLadder) syPlayerY += syPlayerSpeed * fElapsedTime;
+
+		// falling
+		int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
+		int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
+		int cyInterPlayerY = floor(syPlayerY / syCellHeight);
+		bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == Complete;
+		bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == Complete;
+		bool canStand = cyInterPlayerY == nyCells - 1 || (leftCanStand || rightCanStand);
+		bool wouldFall = !canStand || (int(syPlayerY) % syCellHeight) != syCellHeight - 1;
+		if (wouldFall && !nearUpLadder && !nearDownLadder) {
+			syPlayerY += syPlayerFallSpeed * fElapsedTime;
+		}
+
+		sxPlayerX = std::max(std::min(sxPlayerX, float(sxScreenWidth - sxPlayerWidth)), 0.0f - float(sxPlayerWidth) / 2.0f);
+		syPlayerY = std::max(std::min(syPlayerY, float(syBeachMax - 1)), float(syPlayerHeight - 1));
+
+		int cxPlayerX = floor((sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset) / sxCellWidth);
+		int cyPlayerY = floor(syPlayerY / syCellHeight);
+
+		bool inBounds = cxPlayerX >= 0 && cxPlayerX < nxCells&& cyPlayerY >= 0 && cyPlayerY < nyCells;
+		bool nearTree = (cxPlayerX == -1 && cyPlayerY == nyCells - 1);
+		bool ladderInCell = false;
+		bool ladderInBelowCell = false;
+		for (int l = 0; l < ladders.size(); l++) {
+			olc::vi2d ladder = ladders[l];
+			if (ladder.x == cxPlayerX && ladder.y == cyPlayerY) {
+				ladderInCell = true;
+				if (ladderInBelowCell) break;
+			}
+			if (ladder.x == cxPlayerX && ladder.y == cyPlayerY + 1) {
+				ladderInBelowCell = true;
+				if (ladderInCell) break;
+			}
+		};
+		nearUpLadder = ladderInCell;
+		nearDownLadder = ladderInCell || ladderInBelowCell;
+
+		actionState = Idle;
+		if (GetKey(olc::Key::S).bPressed && inBounds) actionState = GettingSand;
+		if (GetKey(olc::Key::W).bPressed && inBounds) actionState = GettingWater;
+		if (GetKey(olc::Key::C).bPressed && nearTree) actionState = GettingWood;
+		if (GetKey(olc::Key::D).bPressed && inBounds) {
+			switch (bucket) {
+			case BucketSand:
+				actionState = PouringSand;
+				break;
+			case BucketWater:
+				actionState = PouringWater;
+				break;
+			case BucketWood:
+				actionState = SettingLadder;
+				break;
+			}
+		}
 
 		if (GetKey(olc::Key::R).bPressed) raining = !raining;
 		if (GetKey(olc::Key::B).bPressed) wind = !wind;
 		if (GetKey(olc::Key::T).bPressed) tide = !tide;
 		if (GetKey(olc::Key::G).bPressed) debug = !debug;
 
-		syPlayerY = std::max(std::min(syPlayerY, float(syBeachMax - syPlayerHeight)), 0.0f);
-
-		cxPlayerX = floor((sxPlayerX + sxPlayerWidth/2) / sxCellWidth);
-		cyPlayerY = floor(syPlayerY / syCellHeight);
-
 		if (tide) wySeaLevel -= wdySeaRiseRate * fElapsedTime;
 
-		if (pouringSand && cxPlayerX >= 0 && cxPlayerX < nxCells && cyPlayerY >= 0 && cyPlayerY < nyCells) {
-			sandCharge += fElapsedTime * sandRate;
-			if (sandCharge >= 1.0) {
-				castleArea[cyPlayerY][cxPlayerX] = DrySand;
-				sandCharge = 0.0;
+		switch (actionState) {
+		case GettingSand:
+			bucket = BucketSand;
+			break;
+		case GettingWater:
+			bucket = BucketWater;
+			break;
+		case GettingWood:
+			bucket = BucketWood;
+			break;
+		case PouringSand:
+			switch (castleGrid[cyPlayerY][cxPlayerX]) {
+			case Empty:
+				castleGrid[cyPlayerY][cxPlayerX] = HalfDry;
+				bucket = BucketEmpty;
+				break;
+			case HalfDamp:
+				castleGrid[cyPlayerY][cxPlayerX] = TopDry;
+				bucket = BucketEmpty;
 			}
-		}
-		else {
-			sandCharge = 0.0;
-		}
-
-		if (pouringWater && cxPlayerX >= 0 && cxPlayerX < nxCells && cyPlayerY >= 0 && cyPlayerY < nyCells) {
-			waterCharge += fElapsedTime * waterRate;
-			if (waterCharge >= 1.0) {
-				castleArea[cyPlayerY][cxPlayerX] = Water;
-				waterCharge = 0.0;
+			break;
+		case PouringWater:
+			switch (castleGrid[cyPlayerY][cxPlayerX]) {
+			case HalfDry:
+				castleGrid[cyPlayerY][cxPlayerX] = HalfDamp;
+				bucket = BucketEmpty;
+				break;
+			case TopDry:
+				castleGrid[cyPlayerY][cxPlayerX] = Complete;
+				bucket = BucketEmpty;
 			}
-		}
-		else {
-			waterCharge = 0.0;
-		}
-
-		if (pouringDampSand && cxPlayerX >= 0 && cxPlayerX < nxCells && cyPlayerY >= 0 && cyPlayerY < nyCells) {
-			dampSandCharge += fElapsedTime * dampSandRate;
-			if (dampSandCharge >= 1.0) {
-				castleArea[cyPlayerY][cxPlayerX] = DampSand;
-				dampSandCharge = 0.0;
+			break;
+		case SettingLadder:
+			switch (castleGrid[cyPlayerY][cxPlayerX]) {
+			case Complete:
+				ladders.push_back({cxPlayerX, cyPlayerY});
+				bucket = BucketEmpty;
 			}
-		}
-		else {
-			dampSandCharge = 0.0;
-		}
-
-		// apply gravity
-		fallCharge += fElapsedTime * fallRate;
-		if (fallCharge >= 1.0) {
-			for (int y = nyCells - 1; y >= 0; y--) {
-				for (int x = 0; x < nxCells; x++) {
-					switch (castleArea[y][x]) {
-					case DrySand:
-						if (y < nyCells - 1) {
-							CastlePixel below = castleArea[y + 1][x];
-							switch (below) {
-							case Empty:
-								swap(castleArea, x, y, x, y + 1);
-								break;
-							case Water:
-								castleArea[y + 1][x] = DampSand;
-								castleArea[y][x] = Empty;
-								break;
-							case DrySand:
-							case DampSand:
-								if (y % 2 == 0) {
-									if (x > 0 && castleArea[y + 1][x - 1] == Empty) {
-										swap(castleArea, x, y, x - 1, y + 1);
-									}
-									else {
-										if (x < nxCells - 1 && castleArea[y + 1][x + 1] == Empty) {
-											swap(castleArea, x, y, x + 1, y + 1);
-										}
-									}
-								}
-								else {
-									if (x < nxCells - 1 && castleArea[y + 1][x + 1] == Empty) {
-										swap(castleArea, x, y, x + 1, y + 1);
-									}
-									else {
-										if (x > 0 && castleArea[y + 1][x - 1] == Empty) {
-											swap(castleArea, x, y, x - 1, y + 1);
-										}
-									}
-								}
-								break;
-							}
-						}
-						break;
-					case Water:
-						if (y < nyCells - 1) {
-							CastlePixel below = castleArea[y + 1][x];
-							switch (below) {
-							case Empty:
-								swap(castleArea, x, y, x, y + 1);
-								break;
-							case DrySand:
-								castleArea[y + 1][x] = DampSand;
-								castleArea[y][x] = Empty;
-							case DampSand:
-							case Water:
-								if (y % 2 == 0) {
-									if (x > 0 && castleArea[y + 1][x - 1] == Empty) {
-										swap(castleArea, x, y, x - 1, y + 1);
-									}
-									else {
-										if (x < nxCells - 1 && castleArea[y + 1][x + 1] == Empty) {
-											swap(castleArea, x, y, x + 1, y + 1);
-										}
-										else {
-											if (x > 0 && castleArea[y][x - 1] == Empty) {
-												swap(castleArea, x, y, x - 1, y);
-											}
-											else {
-												if (x < nxCells - 1 && castleArea[y][x + 1] == Empty) {
-													swap(castleArea, x, y, x + 1, y);
-												}
-											}
-										}
-									}
-								}
-								else {
-									if (x < nxCells - 1 && castleArea[y + 1][x + 1] == Empty) {
-										swap(castleArea, x, y, x + 1, y + 1);
-									}
-									else {
-										if (x > 0 && castleArea[y + 1][x - 1] == Empty) {
-											swap(castleArea, x, y, x - 1, y + 1);
-										}
-										else {
-											if (x < nxCells - 1 && castleArea[y][x + 1] == Empty) {
-												swap(castleArea, x, y, x + 1, y);
-											}
-											else {
-												if (x > 0 && castleArea[y][x - 1] == Empty) {
-													swap(castleArea, x, y, x - 1, y);
-												}
-											}
-										}
-									}
-								}
-								break;
-							}
-						}
-						break;
-					case DampSand:
-						if (y < nyCells - 1) {
-							CastlePixel below = castleArea[y + 1][x];
-							switch (below) {
-							case Empty:
-							case Water:
-								swap(castleArea, x, y, x, y + 1);
-								break;
-							case DrySand:
-							case DampSand:
-								break;
-							}
-						}
-						break;
-					case Empty:
-						break;
-					}
-				}
-			}
-			fallCharge -= 1.0;
+			break;
 		}
 
 		// draw beach
-		FillRect(0, syBeachMax, ScreenWidth(), ScreenHeight() - syBeachMax, olc::DARK_YELLOW);
+		FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
+		DrawLine(0, syBeachMax, sxScreenWidth - 1, syBeachMax, olc::VERY_DARK_YELLOW);
+
+		// draw debug grid lines
+		if (debug) {
+			for (int cx = 0; cx < nxCells; cx++) {
+				int sx = cx * sxCellWidth + sxCellsOffset;
+				DrawLine(sx, 0, sx, syBeachMax, olc::GREY);
+			}
+			for (int cy = 0; cy <= nyCells; cy++) {
+				int sy = cy * syCellHeight;
+				DrawLine(sxCellsOffset, sy, sxScreenWidth - 1, sy, olc::GREY);
+			}
+		}
 
 		// draw castle area
 		for (int y = 0; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				CastlePixel p = castleArea[y][x];
-				switch (castleArea[y][x]) {
-				case DrySand: FillRect(x * sxCellWidth, y * syCellHeight, sxCellWidth, syCellHeight, olc::YELLOW); break;
-				case Water: FillRect(x * sxCellWidth, y * syCellHeight, sxCellWidth, syCellHeight, olc::BLUE); break;
-				case DampSand: FillRect(x * sxCellWidth, y * syCellHeight, sxCellWidth, syCellHeight, olc::DARK_YELLOW); break;
+				switch (castleGrid[y][x]) {
+				case Empty:
+					break;
+				case HalfDry:
+					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::YELLOW);
+					break;
+				case HalfDamp:
+					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::DARK_YELLOW);
+					break;
+				case TopDry:
+					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::DARK_YELLOW);
+					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellWidth, syHalfcellHeight, olc::YELLOW);
+					break;
+				case Complete:
+					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellWidth, syCellHeight, olc::DARK_YELLOW);
+					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::VERY_DARK_YELLOW);
+					break;
+				}
+			}
+		}
+
+		// draw ladders
+		for (int l = 0; l < ladders.size(); l++) {
+			olc::vi2d pos = ladders[l];
+			int x = pos.x;
+			int y = pos.y;
+			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight * y + 1, sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight* (y + 1) - 1, brown);
+			DrawLine(sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* y + 1, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* (y + 1) - 1, brown);
+			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight*y + syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* y + syCrenelHeight, brown);
+			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight* y + 2 * syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* y + 2 * syCrenelHeight, brown);
+			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight*y + 3*syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight*y + 3*syCrenelHeight, brown);
+		}
+
+		// draw tree
+		FillRect(0, syBeachMax - syCellHeight, sxCellsOffset, syCellHeight, brown);
+
+		// draw crenellations above player
+		for (int y = 0; y < cyPlayerY + 1; y++) {
+			for (int x = 0; x < nxCells; x++) {
+				if (castleGrid[y][x] == Complete) {
+					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
+					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
+				}
+			}
+		}
+
+		// draw player
+		FillRect(sxPlayerX, syPlayerY - syPlayerHeight + 1, sxPlayerWidth, syPlayerHeight, olc::MAGENTA);
+
+		// draw crenellations below player
+		for (int y = cyPlayerY + 1; y < nyCells; y++) {
+			for (int x = 0; x < nxCells; x++) {
+				if (castleGrid[y][x] == Complete) {
+					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
+					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
 				}
 			}
 		}
 
 		// draw sea
-		int sySeaLevel = wySeaLevel * ScreenHeight();
-		FillRect(0, sySeaLevel, ScreenWidth(), ScreenHeight() - sySeaLevel, olc::BLUE);
-
-		// draw debug grid lines
-		if (debug) {
-			for (int cx = 0; cx < nxCells; cx++) {
-				int sx = cx * sxCellWidth;
-				DrawLine(sx, 0, sx, syBeachMax, olc::GREY);
-			}
-			for (int cy = 0; cy <= nyCells; cy++) {
-				int sy = cy * syCellHeight;
-				DrawLine(0, sy, ScreenWidth() - 1, sy, olc::GREY);
-			}
-		}
-
-		// draw player
-		FillRect(sxPlayerX, syPlayerY, sxPlayerWidth, syPlayerHeight, olc::MAGENTA);
+		int sySeaLevel = wySeaLevel * syScreenHeight;
+		FillRect(0, sySeaLevel, sxScreenWidth, syScreenHeight - sySeaLevel, olc::BLUE);
 
 		// rainfall
 		if (wind) {
@@ -316,28 +326,38 @@ public:
 		}
 		if (raining) {
 			rainCharge += fElapsedTime*rainRate;
-			while (rainCharge >= 1) {
+			while (rainCharge >= 1.0f) {
 				float wxNewX = wxMaxRainX * std::rand() / float(RAND_MAX);
-				int sxNewX = floor(ScreenWidth() * wxNewX);
+				int sxNewX = floor(sxScreenWidth * wxNewX);
 				wxRaindropsX.push_back(wxNewX);
 				wyRaindropsY.push_back(0.0);
-				rainCharge -= 1.0;
-			}
-			rainParticleCharge += fElapsedTime * rainParticleRate;
-			while (rainParticleCharge >= 1) {
-				float wxNewX = wxMaxRainX * std::rand() / float(RAND_MAX);
-				int sxNewX = floor(ScreenWidth() * wxNewX);
-				castleArea[0][int(sxNewX / sxCellWidth)] = Water;
-				rainParticleCharge -= 1.0;
+				rainCharge -= 1.0f;
 			}
 		}
 		for (int n = 0; n < wxRaindropsX.size(); n++) {
 			float wx = wxRaindropsX[n];
 			float wy = wyRaindropsY[n];
-			Draw(wx*ScreenWidth(), wy*ScreenHeight(), olc::BLUE);
+			Draw(wx*sxScreenWidth, wy*syScreenHeight, olc::BLUE);
 		}
 
-		DrawString(0, 0, std::to_string(cxPlayerX) + ", " + std::to_string(cyPlayerY));
+		// draw bucket UI
+		FillRect(sxScreenWidth - 10, syBeachMax + 1, 10, syScreenHeight - syBeachMax - 1, olc::GREY);
+		switch (bucket) {
+		case BucketEmpty:
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::CYAN);
+			break;
+		case BucketSand:
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_YELLOW);
+			break;
+		case BucketWater:
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_BLUE);
+			break;
+		case BucketWood:
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, brown);
+			break;
+		}
+
+		DrawString(0, 0, std::to_string(leftCanStand) + ", " + std::to_string(rightCanStand) + ", " + std::to_string(wouldFall));
 
 		return true;
 	}
@@ -347,7 +367,7 @@ public:
 int main()
 {
 	Game demo;
-	if (demo.Construct(120, 120, 4, 4))
+	if (demo.Construct(sxScreenWidth, syScreenHeight, 4, 4))
 		demo.Start();
 
 	return 0;

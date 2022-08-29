@@ -31,6 +31,8 @@ static const int sxLadderOffset = sxCrenelOffset + sxCrenelWidth - 1;
 
 static const olc::Pixel brown = olc::Pixel(128, 0, 64);
 
+static const float sunburnTime = 5.0f;
+
 enum ActionState {
 	Idle,
 	GettingSand,
@@ -92,6 +94,9 @@ private:
 	bool nearUpLadder = false;
 	bool nearDownLadder = false;
 
+	std::vector<olc::vi2d> sunburnLocations;
+	std::vector<float> sunburnTimes;
+
 	bool debug = false;
 
 	void drawCrenel(int sx, int sy) {
@@ -103,6 +108,9 @@ private:
 	}
 
 	BucketState bucket = BucketEmpty;
+
+	float sunburnEventRate = 1.0f/30.0f;
+	float sunburnEventCharge = 0.0f;
 
 public:
 	bool OnUserCreate() override
@@ -120,6 +128,52 @@ public:
 	{
 		Clear(olc::CYAN);
 
+		// sunburn event timer
+		sunburnEventCharge += fElapsedTime*sunburnEventRate;
+		if (sunburnEventCharge >= 1.0f) {
+			// apply sunburn
+			for (int x = 0; x < nxCells; x++) {
+				for (int y = 0; y < nyCells; y++) {
+					if (castleGrid[y][x] == Complete) {
+						bool inBurns = std::find(
+							sunburnLocations.begin(),
+							sunburnLocations.end(),
+							olc::vi2d(x, y)
+						) != sunburnLocations.end();
+						if (!inBurns) {
+							sunburnLocations.push_back(olc::vi2d(x, y));
+							sunburnTimes.push_back(sunburnTime);
+						}
+					}
+				}
+			}
+			while (sunburnEventCharge >= 1.0f) {
+				sunburnEventCharge -= 1.0f;
+			}
+		}
+
+		// sunburn timer
+		for (int n = 0; n < sunburnLocations.size();) {
+			sunburnTimes[n] -= fElapsedTime;
+			if (sunburnTimes[n] <= 0.0f) {
+				olc::vi2d cell = sunburnLocations[n];
+				
+				castleGrid[cell.y][cell.x] = Empty; // dry out cell here, removing now for placeholder
+				for (int l = 0; l < ladders.size(); l++) {
+					if (ladders[l] == cell) {
+						ladders.erase(ladders.begin() + l);
+						break;
+					}
+				}
+
+				sunburnLocations.erase(sunburnLocations.begin() + n);
+				sunburnTimes.erase(sunburnTimes.begin() + n);
+			}
+			else {
+				n++;
+			}
+		}
+
 		if (GetKey(olc::Key::LEFT).bHeld) sxPlayerX -= sxPlayerSpeed * fElapsedTime;
 		if (GetKey(olc::Key::RIGHT).bHeld) sxPlayerX += sxPlayerSpeed * fElapsedTime;
 		if (GetKey(olc::Key::UP).bHeld && nearUpLadder) syPlayerY -= syPlayerSpeed * fElapsedTime;
@@ -131,15 +185,17 @@ public:
 		int cyInterPlayerY = floor(syPlayerY / syCellHeight);
 		bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == Complete;
 		bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == Complete;
-		bool canStand = cyInterPlayerY == nyCells - 1 || (leftCanStand || rightCanStand);
-		bool wouldFall = !canStand || (int(syPlayerY) % syCellHeight) != syCellHeight - 1;
+		bool onWorldFloor = cyInterPlayerY == nyCells - 1;
+		bool canStand = onWorldFloor || leftCanStand || rightCanStand;
+		bool onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
+		bool wouldFall = !canStand || !onCellFloor;
 		if (wouldFall && !nearUpLadder && !nearDownLadder) {
 			syPlayerY += syPlayerFallSpeed * fElapsedTime;
 		}
 
+		// final player position / cell
 		sxPlayerX = std::max(std::min(sxPlayerX, float(sxScreenWidth - sxPlayerWidth)), 0.0f - float(sxPlayerWidth) / 2.0f);
 		syPlayerY = std::max(std::min(syPlayerY, float(syBeachMax - 1)), float(syPlayerHeight - 1));
-
 		int cxPlayerX = floor((sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset) / sxCellWidth);
 		int cyPlayerY = floor(syPlayerY / syCellHeight);
 
@@ -159,7 +215,7 @@ public:
 			}
 		};
 		nearUpLadder = ladderInCell;
-		nearDownLadder = ladderInCell || ladderInBelowCell;
+		nearDownLadder = ladderInCell || (ladderInBelowCell && onCellFloor);
 
 		actionState = Idle;
 		if (GetKey(olc::Key::S).bPressed && inBounds) actionState = GettingSand;
@@ -205,6 +261,7 @@ public:
 			case HalfDamp:
 				castleGrid[cyPlayerY][cxPlayerX] = TopDry;
 				bucket = BucketEmpty;
+				break;
 			}
 			break;
 		case PouringWater:
@@ -216,6 +273,15 @@ public:
 			case TopDry:
 				castleGrid[cyPlayerY][cxPlayerX] = Complete;
 				bucket = BucketEmpty;
+			case Complete:
+				for (int b = 0; b < sunburnLocations.size(); b++) {
+					if (sunburnLocations[b] == olc::vi2d(cxPlayerX, cyPlayerY)) {
+						sunburnLocations.erase(sunburnLocations.begin() + b);
+						sunburnTimes.erase(sunburnTimes.begin() + b);
+						bucket = BucketEmpty;
+						break;
+					}
+				}
 			}
 			break;
 		case SettingLadder:
@@ -267,6 +333,15 @@ public:
 			}
 		}
 
+		// redraw cells drying out
+		for (int n = 0; n < sunburnLocations.size(); n++) {
+			olc::vi2d pos = sunburnLocations[n];
+			float time = sunburnTimes[n];
+			olc::Pixel col = olc::PixelLerp(olc::YELLOW, olc::DARK_YELLOW, time / sunburnTime);
+			FillRect(sxCellsOffset + sxCellWidth * pos.x, syCellHeight* pos.y, sxCellWidth, syCellHeight, col);
+			DrawLine(sxCellsOffset + sxCellWidth * pos.x, syCellHeight* pos.y, sxCellsOffset + sxCellWidth * (pos.x + 1) - 1, syCellHeight* pos.y, olc::VERY_DARK_YELLOW);
+		}
+
 		// draw ladders
 		for (int l = 0; l < ladders.size(); l++) {
 			olc::vi2d pos = ladders[l];
@@ -277,6 +352,12 @@ public:
 			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight*y + syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* y + syCrenelHeight, brown);
 			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight* y + 2 * syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight* y + 2 * syCrenelHeight, brown);
 			DrawLine(sxCellsOffset + sxCellWidth * x + sxLadderOffset, syCellHeight*y + 3*syCrenelHeight, sxCellsOffset + sxCellWidth * (x + 1) - sxLadderOffset - 1, syCellHeight*y + 3*syCrenelHeight, brown);
+		}
+
+		// draw fire effect on cells drying out
+		for (int n = 0; n < sunburnLocations.size(); n++) {
+			olc::vi2d pos = sunburnLocations[n];
+			FillRect(sxCellsOffset + sxCellWidth * pos.x, syCellHeight * pos.y + 3*syCrenelHeight, sxCellWidth, syCrenelHeight, olc::RED);
 		}
 
 		// draw tree
@@ -340,6 +421,14 @@ public:
 			Draw(wx*sxScreenWidth, wy*syScreenHeight, olc::BLUE);
 		}
 
+		// draw hotter sun if any blocks burning
+		if (sunburnLocations.size() > 0) {
+			FillCircle(sxScreenWidth - 10, 10, 10, olc::RED);
+		}
+		else {
+			FillCircle(sxScreenWidth - 10, 10, 10, olc::YELLOW);
+		}
+
 		// draw bucket UI
 		FillRect(sxScreenWidth - 10, syBeachMax + 1, 10, syScreenHeight - syBeachMax - 1, olc::GREY);
 		switch (bucket) {
@@ -357,7 +446,7 @@ public:
 			break;
 		}
 
-		DrawString(0, 0, std::to_string(leftCanStand) + ", " + std::to_string(rightCanStand) + ", " + std::to_string(wouldFall));
+		DrawString(0, 0, std::to_string(nearDownLadder) + std::to_string(canStand));
 
 		return true;
 	}

@@ -14,12 +14,18 @@ static const int syCellHeight = 4 * syCrenelHeight; // must be multiple of four 
 static const int nxCells = 9;
 static const int nyCells = 9;
 
+static const int nxParticles = nxCells * sxCellWidth;
+static const int nyParticles = nyCells * syCellHeight;
+
 static const int sxCellsOffset = sxCellWidth; // non-build area on left edge for trees, cliffs etc.
 
 static const int sxScreenWidth = sxCellsOffset + sxCellWidth * nxCells;
 static const int syBeachMax = syCellHeight * nyCells;
 static const int syBottom = 12;
 static const int syScreenHeight = syBeachMax + syCellHeight;
+
+static const int sxMoonTarget = sxCellsOffset + sxCellWidth * nxCells / 2;
+static const int syMoonTarget = syBeachMax;
 
 static const int sxPlayerWidth = 3 * sxCrenelOffset;
 static const int syPlayerHeight = 6 * sxCrenelOffset;
@@ -37,24 +43,38 @@ enum ActionState {
 	Idle,
 	GettingSand,
 	GettingWater,
+	GettingDampSand,
 	GettingWood,
 	PouringSand,
 	PouringWater,
+	PouringDampSand,
 	SettingLadder
 };
 
+enum Particle {
+	NoParticle,
+	DrySand,
+	DampSand
+};
+
+void swap(Particle grid[nyParticles][nxParticles], int x1, int y1, int x2, int y2) {
+	Particle t1 = grid[y1][x1];
+	Particle t2 = grid[y2][x2];
+	grid[y2][x2] = t1;
+	grid[y1][x1] = t2;
+}
+
 enum CastleCell {
-	Empty,
-	HalfDry,
-	HalfDamp,
-	TopDry,
-	Complete
+	NonFullCell,
+	FullDryCell,
+	FullDampCell
 };
 
 enum BucketState {
 	BucketEmpty,
 	BucketSand,
 	BucketWater,
+	BucketDampSand,
 	BucketWood
 };
 
@@ -82,12 +102,14 @@ private:
 	const float windSpeed = -1.0f;
 	const float wxMaxRainX = 1.0f - windSpeed / rainFallSpeed;
 
-	bool tide = false;
-	float wySeaLevel = 1.0f;
+	bool seaRising = false;
+	float wySeaStart = float(syBeachMax + syCrenelHeight) / float(syScreenHeight);
+	float wySeaLevel = float(syBeachMax + syCrenelHeight)/float(syScreenHeight);
 	const float wdySeaRiseRate = 1.0f / 120.0f;
 
 	ActionState actionState = Idle;
 
+	Particle particles[nyParticles][nxParticles];
 	CastleCell castleGrid[nyCells][nxCells];
 
 	std::vector<olc::vi2d> ladders;
@@ -103,21 +125,53 @@ private:
 		// fill one extra line dark yellow height to overwrite "lid" of the block
 		FillRect(sx + 1, sy - syCrenelHeight, sxCrenelWidth - 2, syCrenelHeight + 1, olc::DARK_YELLOW);
 		DrawLine(sx, sy - syCrenelHeight, sx, sy - 1, olc::VERY_DARK_YELLOW);
-		DrawLine(sx + sxCrenelWidth- 1, sy - syCrenelHeight, sx + sxCrenelWidth - 1, sy - 1, olc::VERY_DARK_YELLOW);
+		DrawLine(sx + sxCrenelWidth - 1, sy - syCrenelHeight, sx + sxCrenelWidth - 1, sy - 1, olc::VERY_DARK_YELLOW);
 		DrawLine(sx, sy - syCrenelHeight, sx + sxCrenelWidth - 1, sy - syCrenelHeight, olc::VERY_DARK_YELLOW);
 	}
+
+	void updateCellFromParticles(int cx, int cy) {
+		int sTop = cy * syCellHeight;
+		int sLeft = cx * sxCellWidth;
+		Particle firstParticle = particles[sTop][sLeft];
+		if (firstParticle == NoParticle) {
+			castleGrid[cy][cx] = NonFullCell;
+		}
+		else {
+			Particle cellType = firstParticle;
+			for (int x = 0; x < sxCellWidth; x++) {
+				for (int y = 0; y < syCellHeight; y++) {
+					cellType = std::min(cellType, particles[sTop + y][sLeft + x]);
+				}
+			}
+			switch (cellType) {
+			case NoParticle:
+				castleGrid[cy][cx] = NonFullCell;
+				break;
+			case DrySand:
+				castleGrid[cy][cx] = FullDryCell;
+				break;
+			case DampSand:
+				castleGrid[cy][cx] = FullDampCell;
+				break;
+			}
+		}
+	}
+
 
 	BucketState bucket = BucketEmpty;
 
 	float sunburnEventRate = 1.0f/30.0f;
 	float sunburnEventCharge = 0.0f;
 
+	float particleDropRate = 40.0f;
+	float particleDropCharge = 0.0f;
+
 public:
 	bool OnUserCreate() override
 	{
 		for (int y = 0; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				castleGrid[y][x] = Empty;
+				castleGrid[y][x] = NonFullCell;
 			}
 		}
 
@@ -129,12 +183,12 @@ public:
 		Clear(olc::CYAN);
 
 		// sunburn event timer
-		sunburnEventCharge += fElapsedTime*sunburnEventRate;
+		sunburnEventCharge += fElapsedTime * sunburnEventRate;
 		if (sunburnEventCharge >= 1.0f) {
 			// apply sunburn
 			for (int x = 0; x < nxCells; x++) {
 				for (int y = 0; y < nyCells; y++) {
-					if (castleGrid[y][x] == Complete) {
+					if (castleGrid[y][x] == FullDampCell) {
 						bool inBurns = std::find(
 							sunburnLocations.begin(),
 							sunburnLocations.end(),
@@ -157,12 +211,11 @@ public:
 			sunburnTimes[n] -= fElapsedTime;
 			if (sunburnTimes[n] <= 0.0f) {
 				olc::vi2d cell = sunburnLocations[n];
-				
-				castleGrid[cell.y][cell.x] = Empty; // dry out cell here, removing now for placeholder
-				for (int l = 0; l < ladders.size(); l++) {
-					if (ladders[l] == cell) {
-						ladders.erase(ladders.begin() + l);
-						break;
+
+				castleGrid[cell.y][cell.x] = NonFullCell; // dry out cell here, removing now for placeholder
+				for (int x = cell.x * sxCellWidth; x < (cell.x + 1) * sxCellWidth; x++) {
+					for (int y = cell.y * syCellHeight; y < (cell.y + 1) * syCellHeight; y++) {
+						particles[y][x] = DrySand;
 					}
 				}
 
@@ -171,6 +224,119 @@ public:
 			}
 			else {
 				n++;
+			}
+		}
+
+		if (seaRising) wySeaLevel -= wdySeaRiseRate * fElapsedTime;
+		int sySeaLevel = int(wySeaLevel * syScreenHeight);
+
+		// tide wets sand
+		int syTideWetHeight = sySeaLevel - syCrenelHeight;
+		for (int x = 0; x < nxParticles; x++) {
+			for (int y = syTideWetHeight; y < nyParticles; y++) {
+				if (particles[y][x] == DrySand) {
+					particles[y][x] = DampSand;
+				}
+			}
+		}
+
+		// particles fall
+		particleDropCharge += fElapsedTime * particleDropRate;
+		while (particleDropCharge >= 1.0f) {
+			for (int y = nyParticles - 1; y >= 0; y--) {
+				int updateDirection = std::rand() % 2;
+				for (int x = (nxParticles - 1) * updateDirection; x >= 0 && x < nxParticles; x += 1 - 2*updateDirection) {
+					bool leftDamp = x > 0 && particles[y][x - 1] == DampSand;
+					bool rightDamp = x < nxParticles - 1 && particles[y][x + 1] == DampSand;
+					switch(particles[y][x]) {
+					case DrySand:
+						if (y < nyParticles - 1) {
+							Particle below = particles[y + 1][x];
+							switch(below) {
+							case NoParticle:
+								swap(particles, x, y, x, y + 1);
+								break;
+							case DrySand:
+							case DampSand:
+								if (std::rand() % 2 == 0) {
+									if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
+										swap(particles, x, y, x - 1, y + 1);
+									}
+									else {
+										if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
+											swap(particles, x, y, x + 1, y + 1);
+										}
+									}
+								}
+								else {
+									if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
+										swap(particles, x, y, x + 1, y + 1);
+									}
+									else {
+										if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
+											swap(particles, x, y, x - 1, y + 1);
+										}
+									}
+								}
+								break;
+							}
+						}
+						break;
+					case DampSand:
+						if (y < nyParticles - 1) {
+							Particle below = particles[y + 1][x];
+							switch (below) {
+							case NoParticle:
+								swap(particles, x, y, x, y + 1);
+								break;
+							case DrySand:
+							case DampSand:
+								if (!leftDamp && !rightDamp) {
+									if (std::rand() % 2 == 0) {
+										if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
+											swap(particles, x, y, x - 1, y + 1);
+										}
+										else {
+											if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
+												swap(particles, x, y, x + 1, y + 1);
+											}
+										}
+									}
+									else {
+										if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
+											swap(particles, x, y, x + 1, y + 1);
+										}
+										else {
+											if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
+												swap(particles, x, y, x - 1, y + 1);
+											}
+										}
+									}
+								}
+								break;
+							}
+						}
+						break;
+					case NoParticle:
+						break;
+					}
+				}
+			}
+			particleDropCharge -= 1.0f;
+		}
+
+		// update tiles from particles
+		for (int cx = 0; cx < nxCells; cx++) {
+			for (int cy = 0; cy < nyCells; cy++) {
+				updateCellFromParticles(cx, cy);
+			}
+		}
+
+		// destroy ladders if cells now empty
+		for (int l = 0; l < ladders.size(); l++) {
+			olc::vi2d pos = ladders[l];
+			if (castleGrid[pos.y][pos.x] == NonFullCell) {
+				ladders.erase(ladders.begin() + l);
 			}
 		}
 
@@ -183,8 +349,8 @@ public:
 		int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
 		int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
 		int cyInterPlayerY = floor(syPlayerY / syCellHeight);
-		bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == Complete;
-		bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == Complete;
+		bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == FullDampCell;
+		bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == FullDampCell;
 		bool onWorldFloor = cyInterPlayerY == nyCells - 1;
 		bool canStand = onWorldFloor || leftCanStand || rightCanStand;
 		bool onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
@@ -218,8 +384,22 @@ public:
 		nearDownLadder = ladderInCell || (ladderInBelowCell && onCellFloor);
 
 		actionState = Idle;
-		if (GetKey(olc::Key::S).bPressed && inBounds) actionState = GettingSand;
-		if (GetKey(olc::Key::W).bPressed && inBounds) actionState = GettingWater;
+		if (GetKey(olc::Key::S).bPressed && inBounds) {
+			if (bucket == BucketWater) {
+				actionState = GettingDampSand;
+			}
+			else {
+				actionState = GettingSand;
+			}
+		}
+		if (GetKey(olc::Key::W).bPressed && inBounds) {
+			if (bucket == BucketSand) {
+				actionState = GettingDampSand;
+			}
+			else {
+				actionState = GettingWater;
+			}
+		}
 		if (GetKey(olc::Key::C).bPressed && nearTree) actionState = GettingWood;
 		if (GetKey(olc::Key::D).bPressed && inBounds) {
 			switch (bucket) {
@@ -229,6 +409,9 @@ public:
 			case BucketWater:
 				actionState = PouringWater;
 				break;
+			case BucketDampSand:
+				actionState = PouringDampSand;
+				break;
 			case BucketWood:
 				actionState = SettingLadder;
 				break;
@@ -237,10 +420,8 @@ public:
 
 		if (GetKey(olc::Key::R).bPressed) raining = !raining;
 		if (GetKey(olc::Key::B).bPressed) wind = !wind;
-		if (GetKey(olc::Key::T).bPressed) tide = !tide;
+		if (GetKey(olc::Key::T).bPressed) seaRising = !seaRising;
 		if (GetKey(olc::Key::G).bPressed) debug = !debug;
-
-		if (tide) wySeaLevel -= wdySeaRiseRate * fElapsedTime;
 
 		switch (actionState) {
 		case GettingSand:
@@ -249,31 +430,38 @@ public:
 		case GettingWater:
 			bucket = BucketWater;
 			break;
+		case GettingDampSand:
+			bucket = BucketDampSand;
+			break;
 		case GettingWood:
 			bucket = BucketWood;
 			break;
 		case PouringSand:
 			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case Empty:
-				castleGrid[cyPlayerY][cxPlayerX] = HalfDry;
-				bucket = BucketEmpty;
-				break;
-			case HalfDamp:
-				castleGrid[cyPlayerY][cxPlayerX] = TopDry;
+			case NonFullCell:
+				castleGrid[cyPlayerY][cxPlayerX] = FullDryCell;
+				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+						if (particles[y][x] != DampSand) {
+							particles[y][x] = DrySand;
+						}
+					}
+				}
 				bucket = BucketEmpty;
 				break;
 			}
 			break;
 		case PouringWater:
 			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case HalfDry:
-				castleGrid[cyPlayerY][cxPlayerX] = HalfDamp;
+			case FullDryCell:
+				castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
+				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+						particles[y][x] = DampSand;
+					}
+				}
 				bucket = BucketEmpty;
-				break;
-			case TopDry:
-				castleGrid[cyPlayerY][cxPlayerX] = Complete;
-				bucket = BucketEmpty;
-			case Complete:
+			case FullDampCell:
 				for (int b = 0; b < sunburnLocations.size(); b++) {
 					if (sunburnLocations[b] == olc::vi2d(cxPlayerX, cyPlayerY)) {
 						sunburnLocations.erase(sunburnLocations.begin() + b);
@@ -284,14 +472,48 @@ public:
 				}
 			}
 			break;
+		case PouringDampSand:
+			switch (castleGrid[cyPlayerY][cxPlayerX]) {
+			case NonFullCell:
+				castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
+				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+						particles[y][x] = DampSand;
+					}
+				}
+				bucket = BucketEmpty;
+				break;
+			}
+			break;
 		case SettingLadder:
 			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case Complete:
-				ladders.push_back({cxPlayerX, cyPlayerY});
+			case FullDryCell:
+			case FullDampCell:
+				ladders.push_back({ cxPlayerX, cyPlayerY });
 				bucket = BucketEmpty;
 			}
 			break;
 		}
+
+		// draw sun, hotter if any blocks burning
+		if (sunburnLocations.size() > 0) {
+			FillCircle(sxScreenWidth - 10, 10, 10, olc::RED);
+		}
+		else {
+			FillCircle(sxScreenWidth - 10, 10, 10, olc::YELLOW);
+		}
+
+		// draw THE MOON
+		// tidal force proportional to 1/distance^2
+		// so distance prop 1/height^(1/2),
+		// size prop 1/distance prop height^(1/2);
+		float seaProgress = 1.0f - wySeaLevel / wySeaStart;
+		FillCircle(
+			sxMoonTarget*std::pow(0.1f + 0.9f * seaProgress, 3.0f),
+			syMoonTarget*std::pow(0.1f + 0.9f * seaProgress, 3.0f),
+			sxScreenWidth* std::pow(0.1f + 0.9f * seaProgress, 3.0f),
+			olc::WHITE
+		);
 
 		// draw beach
 		FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
@@ -309,26 +531,28 @@ public:
 			}
 		}
 
+		// draw particles
+		for (int sx = 0; sx < nxParticles; sx++) {
+			for (int sy = 0; sy < nyParticles; sy++) {
+				switch (particles[sy][sx]) {
+				case DrySand:
+					Draw(sxCellsOffset + sx, sy, olc::YELLOW);
+					break;
+				case DampSand:
+					Draw(sxCellsOffset + sx, sy, olc::DARK_YELLOW);
+					break;
+				}
+			}
+		}
+
 		// draw castle area
 		for (int y = 0; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				switch (castleGrid[y][x]) {
-				case Empty:
-					break;
-				case HalfDry:
-					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::YELLOW);
-					break;
-				case HalfDamp:
-					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::DARK_YELLOW);
-					break;
-				case TopDry:
-					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y + syHalfcellHeight, sxCellWidth, syHalfcellHeight, olc::DARK_YELLOW);
-					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellWidth, syHalfcellHeight, olc::YELLOW);
-					break;
-				case Complete:
-					FillRect(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellWidth, syCellHeight, olc::DARK_YELLOW);
+				if (castleGrid[y][x] == FullDampCell) {
 					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::VERY_DARK_YELLOW);
-					break;
+				}
+				if (castleGrid[y][x] == FullDryCell) {
+					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::DARK_YELLOW);
 				}
 			}
 		}
@@ -341,7 +565,6 @@ public:
 			FillRect(sxCellsOffset + sxCellWidth * pos.x, syCellHeight* pos.y, sxCellWidth, syCellHeight, col);
 			DrawLine(sxCellsOffset + sxCellWidth * pos.x, syCellHeight* pos.y, sxCellsOffset + sxCellWidth * (pos.x + 1) - 1, syCellHeight* pos.y, olc::VERY_DARK_YELLOW);
 		}
-
 		// draw ladders
 		for (int l = 0; l < ladders.size(); l++) {
 			olc::vi2d pos = ladders[l];
@@ -366,7 +589,7 @@ public:
 		// draw crenellations above player
 		for (int y = 0; y < cyPlayerY + 1; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				if (castleGrid[y][x] == Complete) {
+				if (castleGrid[y][x] == FullDampCell) {
 					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
 					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
 				}
@@ -379,7 +602,7 @@ public:
 		// draw crenellations below player
 		for (int y = cyPlayerY + 1; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
-				if (castleGrid[y][x] == Complete) {
+				if (castleGrid[y][x] == FullDampCell) {
 					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
 					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
 				}
@@ -387,7 +610,6 @@ public:
 		}
 
 		// draw sea
-		int sySeaLevel = wySeaLevel * syScreenHeight;
 		FillRect(0, sySeaLevel, sxScreenWidth, syScreenHeight - sySeaLevel, olc::BLUE);
 
 		// rainfall
@@ -421,35 +643,29 @@ public:
 			Draw(wx*sxScreenWidth, wy*syScreenHeight, olc::BLUE);
 		}
 
-		// draw hotter sun if any blocks burning
-		if (sunburnLocations.size() > 0) {
-			FillCircle(sxScreenWidth - 10, 10, 10, olc::RED);
-		}
-		else {
-			FillCircle(sxScreenWidth - 10, 10, 10, olc::YELLOW);
-		}
-
 		// draw bucket UI
 		FillRect(sxScreenWidth - 10, syBeachMax + 1, 10, syScreenHeight - syBeachMax - 1, olc::GREY);
-		switch (bucket) {
+		switch(bucket) {
 		case BucketEmpty:
 			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::CYAN);
 			break;
 		case BucketSand:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_YELLOW);
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::YELLOW);
 			break;
 		case BucketWater:
 			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_BLUE);
+			break;
+		case BucketDampSand:
+			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_YELLOW);
 			break;
 		case BucketWood:
 			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, brown);
 			break;
 		}
 
-		DrawString(0, 0, std::to_string(nearDownLadder) + std::to_string(canStand));
-
 		return true;
 	}
+
 };
 
 

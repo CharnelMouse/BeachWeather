@@ -64,6 +64,16 @@ void swap(Particle grid[nyParticles][nxParticles], int x1, int y1, int x2, int y
 	grid[y1][x1] = t2;
 }
 
+bool swapIfEmpty(Particle grid[nyParticles][nxParticles], int x1, int y1, int x2, int y2) {
+	if (x2 >= 0 && x2 < nxParticles && y2 >= 0 && y2 < nyParticles && grid[y2][x2] == NoParticle) {
+		swap(grid, x1, y1, x2, y2);
+		return true;
+	}
+	else {
+		return false;
+	}
+}
+
 enum CastleCell {
 	NonFullCell,
 	FullDryCell,
@@ -99,8 +109,10 @@ private:
 	const float rainFallSpeed = 2.0f;
 
 	bool wind = false;
-	const float windSpeed = -1.0f;
-	const float wxMaxRainX = 1.0f - windSpeed / rainFallSpeed;
+	const float windSpeed = 1.0f;
+	const float wxMaxRainX = 1.0f + windSpeed / rainFallSpeed;
+	const float wxMinRainX = - windSpeed / rainFallSpeed;
+	float windVelocity = windSpeed;
 
 	bool seaRising = false;
 	float wySeaStart = float(syBeachMax + syCrenelHeight) / float(syScreenHeight);
@@ -163,8 +175,10 @@ private:
 	float sunburnEventRate = 1.0f/30.0f;
 	float sunburnEventCharge = 0.0f;
 
-	float particleDropRate = 40.0f;
-	float particleDropCharge = 0.0f;
+	float particleMoveRate = 40.0f;
+	float particleMoveCharge = 0.0f;
+
+	int fallPreference = 1;
 
 public:
 	bool OnUserCreate() override
@@ -241,79 +255,53 @@ public:
 		}
 
 		// particles fall
-		particleDropCharge += fElapsedTime * particleDropRate;
-		while (particleDropCharge >= 1.0f) {
+		// if wind blowing, dry sand can move to the downwind side
+		particleMoveCharge += fElapsedTime * particleMoveRate;
+		int updateDirection;
+		while (particleMoveCharge >= 1.0f) {
 			for (int y = nyParticles - 1; y >= 0; y--) {
-				int updateDirection = std::rand() % 2;
+				if (!wind) {
+					updateDirection = std::rand() % 2;
+				}
+				else {
+					updateDirection = int(windVelocity < 0.0f);
+				}
 				for (int x = (nxParticles - 1) * updateDirection; x >= 0 && x < nxParticles; x += 1 - 2*updateDirection) {
 					bool leftDamp = x > 0 && particles[y][x - 1] == DampSand;
 					bool rightDamp = x < nxParticles - 1 && particles[y][x + 1] == DampSand;
+					if (wind) {
+						fallPreference = 2*int(windVelocity > 0.0f) - 1;
+					}
+					else {
+						fallPreference = 2*(std::rand() % 2) - 1;
+					}
 					switch(particles[y][x]) {
 					case DrySand:
-						if (y < nyParticles - 1) {
-							Particle below = particles[y + 1][x];
-							switch(below) {
-							case NoParticle:
-								swap(particles, x, y, x, y + 1);
-								break;
-							case DrySand:
-							case DampSand:
-								if (std::rand() % 2 == 0) {
-									if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
-										swap(particles, x, y, x - 1, y + 1);
-									}
-									else {
-										if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
-											swap(particles, x, y, x + 1, y + 1);
-										}
+						if (!wind) {
+							if (!swapIfEmpty(particles, x, y, x, y + 1)) {
+								if (!swapIfEmpty(particles, x, y, x + fallPreference, y + 1)) {
+									swapIfEmpty(particles, x, y, x - fallPreference, y + 1);
+								}
+							}
+						}
+						else {
+							if (!swapIfEmpty(particles, x, y, x + fallPreference, y + 1)) {
+								if (!swapIfEmpty(particles, x, y, x, y + 1)) {
+									if (!swapIfEmpty(particles, x, y, x + fallPreference, y)) {
+										swapIfEmpty(particles, x, y, x - fallPreference, y + 1);
 									}
 								}
-								else {
-									if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
-										swap(particles, x, y, x + 1, y + 1);
-									}
-									else {
-										if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
-											swap(particles, x, y, x - 1, y + 1);
-										}
-									}
-								}
-								break;
 							}
 						}
 						break;
 					case DampSand:
 						if (y < nyParticles - 1) {
-							Particle below = particles[y + 1][x];
-							switch (below) {
-							case NoParticle:
-								swap(particles, x, y, x, y + 1);
-								break;
-							case DrySand:
-							case DampSand:
+							if (!swapIfEmpty(particles, x, y, x, y + 1)) {
 								if (!leftDamp && !rightDamp) {
-									if (std::rand() % 2 == 0) {
-										if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
-											swap(particles, x, y, x - 1, y + 1);
-										}
-										else {
-											if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
-												swap(particles, x, y, x + 1, y + 1);
-											}
-										}
-									}
-									else {
-										if (x < nxParticles - 1 && particles[y + 1][x + 1] == NoParticle) {
-											swap(particles, x, y, x + 1, y + 1);
-										}
-										else {
-											if (x > 0 && particles[y + 1][x - 1] == NoParticle) {
-												swap(particles, x, y, x - 1, y + 1);
-											}
-										}
+									if (!swapIfEmpty(particles, x, y, x + fallPreference, y + 1)) {
+										swapIfEmpty(particles, x, y, x - fallPreference, y + 1);
 									}
 								}
-								break;
 							}
 						}
 						break;
@@ -322,7 +310,7 @@ public:
 					}
 				}
 			}
-			particleDropCharge -= 1.0f;
+			particleMoveCharge -= 1.0f;
 		}
 
 		// update tiles from particles
@@ -419,7 +407,10 @@ public:
 		}
 
 		if (GetKey(olc::Key::R).bPressed) raining = !raining;
-		if (GetKey(olc::Key::B).bPressed) wind = !wind;
+		if (GetKey(olc::Key::B).bPressed) {
+			wind = !wind;
+			windVelocity = windVelocity * float(1 - 2*(std::rand() % 2));
+		}
 		if (GetKey(olc::Key::T).bPressed) seaRising = !seaRising;
 		if (GetKey(olc::Key::G).bPressed) debug = !debug;
 
@@ -615,14 +606,14 @@ public:
 		// rainfall
 		if (wind) {
 			for (auto& x : wxRaindropsX) {
-				x += windSpeed * fElapsedTime;
+				x += windVelocity * fElapsedTime;
 			}
 		}
 		for (auto& y : wyRaindropsY) {
 			y += rainFallSpeed*fElapsedTime;
 		}
 		for (int n = 0; n < wxRaindropsX.size(); n++) {
-			if (wyRaindropsY[n] > wySeaLevel || wxRaindropsX[n] < 0) {
+			if (wyRaindropsY[n] > wySeaLevel || wxRaindropsX[n] < wxMinRainX || wxRaindropsX[n] > wxMaxRainX) {
 				wxRaindropsX.erase(wxRaindropsX.begin() + n);
 				wyRaindropsY.erase(wyRaindropsY.begin() + n);
 			}
@@ -630,7 +621,7 @@ public:
 		if (raining) {
 			rainCharge += fElapsedTime*rainRate;
 			while (rainCharge >= 1.0f) {
-				float wxNewX = wxMaxRainX * std::rand() / float(RAND_MAX);
+				float wxNewX = wxMinRainX + (wxMaxRainX - wxMinRainX)*std::rand() / float(RAND_MAX);
 				int sxNewX = floor(sxScreenWidth * wxNewX);
 				wxRaindropsX.push_back(wxNewX);
 				wyRaindropsY.push_back(0.0);
@@ -662,6 +653,8 @@ public:
 			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, brown);
 			break;
 		}
+
+		DrawString(0, 0, std::to_string(wind) + ", " + std::to_string(windVelocity));
 
 		return true;
 	}

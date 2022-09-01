@@ -601,7 +601,10 @@ public:
 		}
 
 		// draw sea
+		SetPixelBlend(0.7f);
+		SetPixelMode(olc::Pixel::ALPHA);
 		FillRect(0, sySeaLevel, sxScreenWidth, syScreenHeight - sySeaLevel, olc::BLUE);
+		SetPixelMode(olc::Pixel::NORMAL);
 
 		// rainfall
 		if (wind) {

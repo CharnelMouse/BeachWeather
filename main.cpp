@@ -32,6 +32,7 @@ static const int syPlayerHeight = 6 * sxCrenelOffset;
 static const float sxPlayerSpeed = float(2 * sxCellWidth);
 static const float syPlayerSpeed = float(2 * syCellHeight);
 static const float syPlayerFallSpeed = float(4 * syCellHeight);
+static const float syPlayerDrownSpeed = float(syCellHeight);
 
 static const int sxLadderOffset = sxCrenelOffset + sxCrenelWidth - 1;
 
@@ -88,6 +89,13 @@ enum BucketState {
 	BucketWood
 };
 
+enum GameState {
+	Normal,
+	Drowning,
+	Menu,
+	Won
+};
+
 class Game : public olc::PixelGameEngine
 {
 public:
@@ -115,8 +123,8 @@ private:
 	float windVelocity = windSpeed;
 
 	bool seaRising = false;
-	float wySeaStart = float(syBeachMax + syCrenelHeight) / float(syScreenHeight);
-	float wySeaLevel = float(syBeachMax + syCrenelHeight)/float(syScreenHeight);
+	const float wySeaStart = float(syBeachMax + syCrenelHeight) / float(syScreenHeight);
+	float wySeaLevel = wySeaStart;
 	const float wdySeaRiseRate = 1.0f / 120.0f;
 
 	ActionState actionState = Idle;
@@ -130,6 +138,9 @@ private:
 
 	std::vector<olc::vi2d> sunburnLocations;
 	std::vector<float> sunburnTimes;
+
+	int cxPlayerX;
+	int cyPlayerY;
 
 	bool debug = false;
 
@@ -172,28 +183,85 @@ private:
 
 	BucketState bucket = BucketEmpty;
 
-	float sunburnEventRate = 1.0f/30.0f;
+	const float sunburnEventRate = 1.0f/30.0f;
 	float sunburnEventCharge = 0.0f;
 
-	float particleMoveRate = 40.0f;
+	const float particleMoveRate = 40.0f;
 	float particleMoveCharge = 0.0f;
 
-	int fallPreference = 1;
+	int fallPreference;
 
-public:
-	bool OnUserCreate() override
-	{
+	GameState gameState = Menu;
+
+	void resetGameVariables() {
+		sxPlayerX = 60.0f;
+		syPlayerY = float(syBeachMax - 1);
+
+		raining = false;
+		rainCharge = 0.0f;
+
+		wind = false;
+		windVelocity = windSpeed;
+
+		seaRising = false;
+		wySeaLevel = wySeaStart;
+
+		actionState = Idle;
+
+		for (int y = 0; y < nyParticles; y++) {
+			for (int x = 0; x < nxParticles; x++) {
+				particles[y][x] = NoParticle;
+			}
+		}
 		for (int y = 0; y < nyCells; y++) {
 			for (int x = 0; x < nxCells; x++) {
 				castleGrid[y][x] = NonFullCell;
 			}
 		}
 
+		ladders.clear();
+		nearUpLadder = false;
+		nearDownLadder = false;
+
+		sunburnLocations.clear();
+		sunburnTimes.clear();
+
+		debug = false;
+
+		bucket = BucketEmpty;
+
+		sunburnEventCharge = 0.0f;
+		particleMoveCharge = 0.0f;
+	}
+
+	const int sxBucketWidth = 3 * sxCrenelOffset + sxCrenelWidth;
+	const int syBucketHeight = syScreenHeight - syBeachMax - 1;
+
+	void FillBucket(olc::Pixel pixel) {
+		FillRect(sxScreenWidth - sxBucketWidth + 1, syBeachMax + 1, sxBucketWidth - 2, syBucketHeight - 1, pixel);
+	}
+
+public:
+	bool OnUserCreate() override
+	{
 		return true;
 	}
 
 	bool OnUserUpdate(float fElapsedTime) override
 	{
+		if (gameState == Menu) {
+			Clear(olc::CYAN);
+			// draw beach
+			FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
+			DrawLine(0, syBeachMax, sxScreenWidth - 1, syBeachMax, olc::VERY_DARK_YELLOW);
+			DrawString(sxScreenWidth/2 - 40 - 1, syScreenHeight/2 - 4 - 1, "F to start");
+			if (GetKey(olc::Key::F).bPressed) {
+				gameState = Normal;
+				resetGameVariables();
+			}
+			return(true);
+		}
+
 		Clear(olc::CYAN);
 
 		// sunburn event timer
@@ -221,23 +289,25 @@ public:
 		}
 
 		// sunburn timer
-		for (int n = 0; n < sunburnLocations.size();) {
-			sunburnTimes[n] -= fElapsedTime;
-			if (sunburnTimes[n] <= 0.0f) {
-				olc::vi2d cell = sunburnLocations[n];
+		if (gameState != Won) {
+			for (int n = 0; n < sunburnLocations.size();) {
+				sunburnTimes[n] -= fElapsedTime;
+				if (sunburnTimes[n] <= 0.0f) {
+					olc::vi2d cell = sunburnLocations[n];
 
-				castleGrid[cell.y][cell.x] = NonFullCell; // dry out cell here, removing now for placeholder
-				for (int x = cell.x * sxCellWidth; x < (cell.x + 1) * sxCellWidth; x++) {
-					for (int y = cell.y * syCellHeight; y < (cell.y + 1) * syCellHeight; y++) {
-						particles[y][x] = DrySand;
+					castleGrid[cell.y][cell.x] = NonFullCell; // dry out cell here, removing now for placeholder
+					for (int x = cell.x * sxCellWidth; x < (cell.x + 1) * sxCellWidth; x++) {
+						for (int y = cell.y * syCellHeight; y < (cell.y + 1) * syCellHeight; y++) {
+							particles[y][x] = DrySand;
+						}
 					}
-				}
 
-				sunburnLocations.erase(sunburnLocations.begin() + n);
-				sunburnTimes.erase(sunburnTimes.begin() + n);
-			}
-			else {
-				n++;
+					sunburnLocations.erase(sunburnLocations.begin() + n);
+					sunburnTimes.erase(sunburnTimes.begin() + n);
+				}
+				else {
+					n++;
+				}
 			}
 		}
 
@@ -256,7 +326,9 @@ public:
 
 		// particles fall
 		// if wind blowing, dry sand can move to the downwind side
-		particleMoveCharge += fElapsedTime * particleMoveRate;
+		if (gameState != Won) {
+			particleMoveCharge += fElapsedTime * particleMoveRate;
+		}
 		int updateDirection;
 		while (particleMoveCharge >= 1.0f) {
 			for (int y = nyParticles - 1; y >= 0; y--) {
@@ -328,161 +400,189 @@ public:
 			}
 		}
 
-		if (GetKey(olc::Key::LEFT).bHeld) sxPlayerX -= sxPlayerSpeed * fElapsedTime;
-		if (GetKey(olc::Key::RIGHT).bHeld) sxPlayerX += sxPlayerSpeed * fElapsedTime;
-		if (GetKey(olc::Key::UP).bHeld && nearUpLadder) syPlayerY -= syPlayerSpeed * fElapsedTime;
-		if (GetKey(olc::Key::DOWN).bHeld && nearDownLadder) syPlayerY += syPlayerSpeed * fElapsedTime;
-
-		// falling
-		int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
-		int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
-		int cyInterPlayerY = floor(syPlayerY / syCellHeight);
-		bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == FullDampCell;
-		bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == FullDampCell;
-		bool onWorldFloor = cyInterPlayerY == nyCells - 1;
-		bool canStand = onWorldFloor || leftCanStand || rightCanStand;
-		bool onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
-		bool wouldFall = !canStand || !onCellFloor;
-		if (wouldFall && !nearUpLadder && !nearDownLadder) {
-			syPlayerY += syPlayerFallSpeed * fElapsedTime;
-		}
-
-		// final player position / cell
-		sxPlayerX = std::max(std::min(sxPlayerX, float(sxScreenWidth - sxPlayerWidth)), 0.0f - float(sxPlayerWidth) / 2.0f);
-		syPlayerY = std::max(std::min(syPlayerY, float(syBeachMax - 1)), float(syPlayerHeight - 1));
-		int cxPlayerX = floor((sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset) / sxCellWidth);
-		int cyPlayerY = floor(syPlayerY / syCellHeight);
-
-		bool inBounds = cxPlayerX >= 0 && cxPlayerX < nxCells&& cyPlayerY >= 0 && cyPlayerY < nyCells;
-		bool nearTree = (cxPlayerX == -1 && cyPlayerY == nyCells - 1);
-		bool ladderInCell = false;
-		bool ladderInBelowCell = false;
-		for (int l = 0; l < ladders.size(); l++) {
-			olc::vi2d ladder = ladders[l];
-			if (ladder.x == cxPlayerX && ladder.y == cyPlayerY) {
-				ladderInCell = true;
-				if (ladderInBelowCell) break;
+		switch (gameState) {
+		case Won:
+			if (GetKey(olc::Key::F).bPressed) {
+				gameState = Menu;
 			}
-			if (ladder.x == cxPlayerX && ladder.y == cyPlayerY + 1) {
-				ladderInBelowCell = true;
-				if (ladderInCell) break;
-			}
-		};
-		nearUpLadder = ladderInCell;
-		nearDownLadder = ladderInCell || (ladderInBelowCell && onCellFloor);
-
-		actionState = Idle;
-		if (GetKey(olc::Key::S).bPressed && inBounds) {
-			if (bucket == BucketWater) {
-				actionState = GettingDampSand;
-			}
-			else {
-				actionState = GettingSand;
-			}
-		}
-		if (GetKey(olc::Key::W).bPressed && inBounds) {
-			if (bucket == BucketSand) {
-				actionState = GettingDampSand;
-			}
-			else {
-				actionState = GettingWater;
-			}
-		}
-		if (GetKey(olc::Key::C).bPressed && nearTree) actionState = GettingWood;
-		if (GetKey(olc::Key::D).bPressed && inBounds) {
-			switch (bucket) {
-			case BucketSand:
-				actionState = PouringSand;
-				break;
-			case BucketWater:
-				actionState = PouringWater;
-				break;
-			case BucketDampSand:
-				actionState = PouringDampSand;
-				break;
-			case BucketWood:
-				actionState = SettingLadder;
-				break;
-			}
-		}
-
-		if (GetKey(olc::Key::R).bPressed) raining = !raining;
-		if (GetKey(olc::Key::B).bPressed) {
-			wind = !wind;
-			windVelocity = windVelocity * float(1 - 2*(std::rand() % 2));
-		}
-		if (GetKey(olc::Key::T).bPressed) seaRising = !seaRising;
-		if (GetKey(olc::Key::G).bPressed) debug = !debug;
-
-		switch (actionState) {
-		case GettingSand:
-			bucket = BucketSand;
 			break;
-		case GettingWater:
-			bucket = BucketWater;
+		case Drowning:
+			if (GetKey(olc::Key::F).bPressed) {
+				gameState = Menu;
+			}
+			if (syPlayerY - syPlayerHeight + 1 < syScreenHeight) {
+				syPlayerY += syPlayerDrownSpeed * fElapsedTime;
+			}
+			// final player cell
+			cxPlayerX = floor((sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset) / sxCellWidth);
+			cyPlayerY = floor(syPlayerY / syCellHeight);
 			break;
-		case GettingDampSand:
-			bucket = BucketDampSand;
-			break;
-		case GettingWood:
-			bucket = BucketWood;
-			break;
-		case PouringSand:
-			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case NonFullCell:
-				castleGrid[cyPlayerY][cxPlayerX] = FullDryCell;
-				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
-					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
-						if (particles[y][x] != DampSand) {
-							particles[y][x] = DrySand;
+		case Normal:
+			if (GetKey(olc::Key::LEFT).bHeld) sxPlayerX -= sxPlayerSpeed * fElapsedTime;
+			if (GetKey(olc::Key::RIGHT).bHeld) sxPlayerX += sxPlayerSpeed * fElapsedTime;
+			if (GetKey(olc::Key::UP).bHeld && nearUpLadder) syPlayerY -= syPlayerSpeed * fElapsedTime;
+			if (GetKey(olc::Key::DOWN).bHeld && nearDownLadder) syPlayerY += syPlayerSpeed * fElapsedTime;
+
+			// falling
+			int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
+			int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
+			int cyInterPlayerY = floor(syPlayerY / syCellHeight);
+			bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == FullDampCell;
+			bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == FullDampCell;
+			bool onWorldFloor = cyInterPlayerY == nyCells - 1;
+			bool canStand = onWorldFloor || leftCanStand || rightCanStand;
+			bool onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
+			bool wouldFall = !canStand || !onCellFloor;
+			if (wouldFall && !nearUpLadder && !nearDownLadder) {
+				syPlayerY += syPlayerFallSpeed * fElapsedTime;
+			}
+
+			// final player position / cell
+			sxPlayerX = std::max(std::min(sxPlayerX, float(sxScreenWidth - sxPlayerWidth)), 0.0f - float(sxPlayerWidth) / 2.0f);
+			syPlayerY = std::max(std::min(syPlayerY, float(syBeachMax - 1)), float(syPlayerHeight - 1));
+			cxPlayerX = floor((sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset) / sxCellWidth);
+			cyPlayerY = floor(syPlayerY / syCellHeight);
+
+			// check for win/lose states
+			if (syPlayerY - syPlayerHeight + 1 >= sySeaLevel) {
+				gameState = Drowning;
+			}
+			if (syPlayerY < syCellHeight) {
+				gameState = Won;
+			}
+
+			bool inBounds = cxPlayerX >= 0 && cxPlayerX < nxCells&& cyPlayerY >= 0 && cyPlayerY < nyCells;
+			bool nearTree = (cxPlayerX == -1 && cyPlayerY == nyCells - 1);
+			bool ladderInCell = false;
+			bool ladderInBelowCell = false;
+			for (int l = 0; l < ladders.size(); l++) {
+				olc::vi2d ladder = ladders[l];
+				if (ladder.x == cxPlayerX && ladder.y == cyPlayerY) {
+					ladderInCell = true;
+					if (ladderInBelowCell) break;
+				}
+				if (ladder.x == cxPlayerX && ladder.y == cyPlayerY + 1) {
+					ladderInBelowCell = true;
+					if (ladderInCell) break;
+				}
+			};
+			nearUpLadder = ladderInCell;
+			nearDownLadder = ladderInCell || (ladderInBelowCell && onCellFloor);
+			actionState = Idle;
+			if (GetKey(olc::Key::S).bPressed && inBounds) {
+				if (bucket == BucketWater) {
+					actionState = GettingDampSand;
+				}
+				else {
+					actionState = GettingSand;
+				}
+			}
+			if (GetKey(olc::Key::W).bPressed && inBounds) {
+				if (bucket == BucketSand) {
+					actionState = GettingDampSand;
+				}
+				else {
+					actionState = GettingWater;
+				}
+			}
+			if (GetKey(olc::Key::C).bPressed && nearTree) actionState = GettingWood;
+			if (GetKey(olc::Key::D).bPressed && inBounds) {
+				switch (bucket) {
+				case BucketSand:
+					actionState = PouringSand;
+					break;
+				case BucketWater:
+					actionState = PouringWater;
+					break;
+				case BucketDampSand:
+					actionState = PouringDampSand;
+					break;
+				case BucketWood:
+					actionState = SettingLadder;
+					break;
+				}
+			}
+
+			if (GetKey(olc::Key::R).bPressed) raining = !raining;
+			if (GetKey(olc::Key::B).bPressed) {
+				wind = !wind;
+				windVelocity = windVelocity * float(1 - 2 * (std::rand() % 2));
+			}
+			if (GetKey(olc::Key::T).bPressed) seaRising = !seaRising;
+			if (GetKey(olc::Key::G).bPressed) debug = !debug;
+
+			switch (actionState) {
+			case GettingSand:
+				bucket = BucketSand;
+				break;
+			case GettingWater:
+				bucket = BucketWater;
+				break;
+			case GettingDampSand:
+				bucket = BucketDampSand;
+				break;
+			case GettingWood:
+				bucket = BucketWood;
+				break;
+			case PouringSand:
+				switch (castleGrid[cyPlayerY][cxPlayerX]) {
+				case NonFullCell:
+					castleGrid[cyPlayerY][cxPlayerX] = FullDryCell;
+					for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+						for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+							if (particles[y][x] != DampSand) {
+								particles[y][x] = DrySand;
+							}
+						}
+					}
+					bucket = BucketEmpty;
+					break;
+				}
+				break;
+			case PouringWater:
+				switch (castleGrid[cyPlayerY][cxPlayerX]) {
+				case FullDryCell:
+					castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
+					for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+						for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+							particles[y][x] = DampSand;
+						}
+					}
+					bucket = BucketEmpty;
+				case FullDampCell:
+					for (int b = 0; b < sunburnLocations.size(); b++) {
+						if (sunburnLocations[b] == olc::vi2d(cxPlayerX, cyPlayerY)) {
+							sunburnLocations.erase(sunburnLocations.begin() + b);
+							sunburnTimes.erase(sunburnTimes.begin() + b);
+							bucket = BucketEmpty;
+							break;
 						}
 					}
 				}
-				bucket = BucketEmpty;
+				break;
+			case PouringDampSand:
+				switch (castleGrid[cyPlayerY][cxPlayerX]) {
+				case NonFullCell:
+					castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
+					for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
+						for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
+							particles[y][x] = DampSand;
+						}
+					}
+					bucket = BucketEmpty;
+					break;
+				}
+				break;
+			case SettingLadder:
+				switch (castleGrid[cyPlayerY][cxPlayerX]) {
+				case FullDryCell:
+				case FullDampCell:
+					ladders.push_back({ cxPlayerX, cyPlayerY });
+					bucket = BucketEmpty;
+				}
 				break;
 			}
-			break;
-		case PouringWater:
-			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case FullDryCell:
-				castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
-				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
-					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
-						particles[y][x] = DampSand;
-					}
-				}
-				bucket = BucketEmpty;
-			case FullDampCell:
-				for (int b = 0; b < sunburnLocations.size(); b++) {
-					if (sunburnLocations[b] == olc::vi2d(cxPlayerX, cyPlayerY)) {
-						sunburnLocations.erase(sunburnLocations.begin() + b);
-						sunburnTimes.erase(sunburnTimes.begin() + b);
-						bucket = BucketEmpty;
-						break;
-					}
-				}
-			}
-			break;
-		case PouringDampSand:
-			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case NonFullCell:
-				castleGrid[cyPlayerY][cxPlayerX] = FullDampCell;
-				for (int x = cxPlayerX * sxCellWidth; x < (cxPlayerX + 1) * sxCellWidth; x++) {
-					for (int y = cyPlayerY * syCellHeight; y < (cyPlayerY + 1) * syCellHeight; y++) {
-						particles[y][x] = DampSand;
-					}
-				}
-				bucket = BucketEmpty;
-				break;
-			}
-			break;
-		case SettingLadder:
-			switch (castleGrid[cyPlayerY][cxPlayerX]) {
-			case FullDryCell:
-			case FullDampCell:
-				ladders.push_back({ cxPlayerX, cyPlayerY });
-				bucket = BucketEmpty;
-			}
+
 			break;
 		}
 
@@ -638,26 +738,34 @@ public:
 		}
 
 		// draw bucket UI
-		FillRect(sxScreenWidth - 10, syBeachMax + 1, 10, syScreenHeight - syBeachMax - 1, olc::GREY);
+		FillRect(sxScreenWidth - sxBucketWidth, syBeachMax + 1, sxBucketWidth, syBucketHeight, olc::GREY);
 		switch(bucket) {
 		case BucketEmpty:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::CYAN);
+			FillBucket(olc::CYAN);
 			break;
 		case BucketSand:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::YELLOW);
+			FillBucket(olc::YELLOW);
 			break;
 		case BucketWater:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_BLUE);
+			FillBucket(olc::DARK_BLUE);
 			break;
 		case BucketDampSand:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, olc::DARK_YELLOW);
+			FillBucket(olc::DARK_YELLOW);
 			break;
 		case BucketWood:
-			FillRect(sxScreenWidth - 9, syBeachMax + 1, 8, syScreenHeight - syBeachMax - 2, brown);
+			FillBucket(brown);
 			break;
 		}
 
-		DrawString(0, 0, std::to_string(wind) + ", " + std::to_string(windVelocity));
+		// status messages
+		if (gameState == Won) {
+			DrawString(sxScreenWidth / 2 - 48 - 1, syScreenHeight / 2 - 4 - 1, "You made it!");
+			DrawString(sxScreenWidth / 2 - 64 - 1, syScreenHeight / 2 + 4 - 1, "Press F for menu");
+		}
+		if (gameState == Drowning) {
+			DrawString(sxScreenWidth/2 - 28 - 1, syScreenHeight/2 - 4 - 1, "Oops...");
+			DrawString(sxScreenWidth/2 - 64 - 1, syScreenHeight / 2 + 4 - 1, "Press F for menu");
+		}
 
 		return true;
 	}

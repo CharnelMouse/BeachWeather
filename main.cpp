@@ -1,9 +1,6 @@
 #define OLC_PGE_APPLICATION
 #include "olcPixelGameEngine.h"
 
-#define OLC_PGEX_SPLASHSCREEN
-#include "olcPGEX_SplashScreen.h"
-
 // fixed by engine
 static const int letterSize = 8;
 
@@ -45,7 +42,6 @@ static const int sxCellsOffset = sxCellWidth; // non-build area on left edge for
 
 static const int sxScreenWidth = sxCellsOffset + sxCellWidth * nxCells;
 static const int syBeachMax = syCellHeight * nyCells;
-static const int syBottom = 12;
 static const int syScreenHeight = syBeachMax + syCellHeight;
 
 static const int sxMoonStart = sxCellsOffset + sxCellWidth;
@@ -53,8 +49,8 @@ static const int sxMoonTarget = sxCellsOffset + sxCellWidth * nxCells / 2;
 static const int syMoonStart = syCellHeight;
 static const int syMoonTarget = syBeachMax;
 
-static const int sxPlayerWidth = 3 * sxCrenelOffset;
-static const int syPlayerHeight = 6 * sxCrenelOffset;
+static const int sxPlayerWidth = sxCrenelOffset*5/2;
+static const int syPlayerHeight = 5 * sxCrenelOffset;
 static const float sxPlayerSpeed = float(2 * sxCellWidth);
 static const float syPlayerSpeed = float(2 * syCellHeight);
 static const float syPlayerFallSpeed = float(4 * syCellHeight);
@@ -84,7 +80,7 @@ static const float tideEventDisplayTime = 5.0f;
 static const float wySeaStart = float(syBeachMax + syCrenelHeight) / float(syScreenHeight);
 static const float wdySeaRiseRate = 1.0f / 300.0f;
 
-static const float windWoodPushRate = 1.0f/0.3f;
+static const float windWoodPushRate = 1.0f/0.1f;
 
 // particle fall rate is inversely proportional to size of particle
 static const float particleMoveRate = 40.0f * syCellHeight / 16;
@@ -153,8 +149,6 @@ public:
 		sAppName = "Beach Weather";
 	}
 
-	olc::SplashScreen splash;
-
 private:
 
 	float sxPlayerX = 60.0f;
@@ -177,7 +171,7 @@ private:
 	CastleCell castleGrid[nyCells][nxCells];
 
 	std::vector<olc::vi2d> ladders;
-	std::vector<olc::vi2d> looseLadders;
+	std::vector<olc::vf2d> looseLadders;
 	bool nearUpLadder;
 	bool nearDownLadder;
 
@@ -186,8 +180,6 @@ private:
 
 	int cxPlayerX;
 	int cyPlayerY;
-
-	bool debug = false;
 
 	void drawCrenel(int sx, int sy) {
 		// fill one extra line dark yellow height to overwrite "lid" of the block
@@ -245,12 +237,15 @@ private:
 
 	GameState gameState = Menu;
 
-	void resetGameVariables() {
+	void resetGameVariables(bool menu = false) {
 		sxPlayerX = 60.0f;
 		syPlayerY = float(syBeachMax - 1);
 
 		raining = false;
 		rainCharge = 0.0f;
+
+		wxRaindropsX.clear();
+		wyRaindropsY.clear();
 
 		wind = false;
 		windVelocity = windSpeed;
@@ -274,6 +269,22 @@ private:
 				castleGrid[y][x] = NonFullCell;
 			}
 		}
+		if (menu) {
+			for (int cx = nxCells / 2; cx < nxCells / 2 + 3; cx++) {
+				castleGrid[nyCells - 1][cx] = FullDampCell;
+				for (int x = cx*sxCellWidth; x < (cx + 1) * sxCellWidth; x++) {
+					for (int y = (nyCells - 1) * syCellHeight; y < nyCells * syCellHeight; y++) {
+						particles[y][x] = DampSand;
+					}
+				}
+			}
+			castleGrid[nyCells - 2][nxCells / 2 + 1] = FullDampCell;
+			for (int x = (nxCells/2 + 1) * sxCellWidth; x < (nxCells/2 + 2) * sxCellWidth; x++) {
+				for (int y = (nyCells - 2) * syCellHeight; y < (nyCells - 1) * syCellHeight; y++) {
+					particles[y][x] = DampSand;
+				}
+			}
+		}
 
 		ladders.clear();
 		looseLadders.clear();
@@ -287,8 +298,6 @@ private:
 		tideTimer = 0.0f;
 
 		rainTimer = 0.0f;
-
-		debug = false;
 
 		bucket = BucketEmpty;
 
@@ -323,15 +332,98 @@ private:
 	}
 
 	void dropLadder() {
-		looseLadders.push_back(olc::vi2d(
+		looseLadders.push_back(olc::vf2d(
 			sxPlayerX + sxPlayerWidth / 2 - sxCellsOffset / 2,
 			syPlayerY - syCellHeight / 4 + 1
 		));
 	}
 
+	void drawBeach() {
+		FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
+		DrawLine(0, syBeachMax, sxScreenWidth - 1, syBeachMax, olc::VERY_DARK_YELLOW);
+	}
+
+	void drawParticles() {
+		for (int sx = 0; sx < nxParticles; sx++) {
+			for (int sy = 0; sy < nyParticles; sy++) {
+				switch (particles[sy][sx]) {
+				case DrySand:
+					Draw(sxCellsOffset + sx, sy, olc::YELLOW);
+					break;
+				case DampSand:
+					Draw(sxCellsOffset + sx, sy, olc::DARK_YELLOW);
+					break;
+				}
+			}
+		}
+	}
+
+	void drawFullCellTops() {
+		for (int y = 0; y < nyCells; y++) {
+			for (int x = 0; x < nxCells; x++) {
+				if (castleGrid[y][x] == FullDampCell) {
+					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::VERY_DARK_YELLOW);
+				}
+				if (castleGrid[y][x] == FullDryCell) {
+					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::DARK_YELLOW);
+				}
+			}
+		}
+	}
+
+	void drawCliffs() {
+		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset / 2, syBeachMax - syCellHeight, olc::GREY);
+		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset / 2, sxCrenelOffset, olc::GREEN);
+	}
+
+	void drawWoodPile() {
+		FillRect(0, syBeachMax - syCellHeight / 4, sxCellsOffset, syCellHeight / 4, brown);
+		DrawRect(0, syBeachMax - syCellHeight / 4, sxCellsOffset - 1, syCellHeight / 4 - 1, olc::BLACK);
+		FillRect(0, syBeachMax - syCellHeight / 4 - syCellHeight / 4, sxCellsOffset, syCellHeight / 4, brown);
+		DrawRect(0, syBeachMax - syCellHeight / 4 - syCellHeight / 4, sxCellsOffset - 1, syCellHeight / 4 - 1, olc::BLACK);
+	}
+
+	// draw crenellations above player
+	void drawCrenelsBehindPlayer() {
+		for (int y = 0; y < cyPlayerY + 1; y++) {
+			for (int x = 0; x < nxCells; x++) {
+				if (castleGrid[y][x] == FullDampCell) {
+					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
+					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
+				}
+			}
+		}
+	}
+
+	void drawPlayer() {
+		FillRect(sxPlayerX, syPlayerY - syPlayerHeight + 1, sxPlayerWidth, syPlayerHeight, olc::Pixel(210, 169, 161));
+		FillRect(sxPlayerX, syPlayerY - syPlayerHeight * 7 / 16 + 1, sxPlayerWidth, syPlayerHeight * 5 / 16, olc::MAGENTA);
+		FillRect(sxPlayerX, syPlayerY - syPlayerHeight + 1, sxPlayerWidth, syCrenelHeight / 4, brown);
+	}
+
+	// draw crenellations below player
+	void drawCrenelsBeforePlayer() {
+		for (int y = cyPlayerY + 1; y < nyCells; y++) {
+			for (int x = 0; x < nxCells; x++) {
+				if (castleGrid[y][x] == FullDampCell) {
+					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
+					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
+				}
+			}
+		}
+	}
+
+	void drawSea(int sySeaLevel) {
+		SetPixelBlend(0.7f);
+		SetPixelMode(olc::Pixel::ALPHA);
+		FillRect(0, sySeaLevel, sxScreenWidth, syScreenHeight - sySeaLevel, olc::BLUE);
+		SetPixelMode(olc::Pixel::NORMAL);
+	}
+
 public:
 	bool OnUserCreate() override
 	{
+		resetGameVariables(true);
 		return true;
 	}
 
@@ -339,13 +431,21 @@ public:
 	{
 		if (gameState == Menu) {
 			Clear(olc::CYAN);
-			// draw beach
-			FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
-			DrawLine(0, syBeachMax, sxScreenWidth - 1, syBeachMax, olc::VERY_DARK_YELLOW);
-			DrawString(sxScreenWidth/2 - 40 - 1, syScreenHeight/2 - 4 - 1, "F to start");
+			drawBeach();
+			drawParticles();
+			drawFullCellTops();
+			drawCliffs();
+			drawWoodPile();
+			drawCrenelsBehindPlayer();
+			drawPlayer();
+			drawCrenelsBeforePlayer();
+			int sySeaLevel = int(wySeaLevel * syScreenHeight);
+			drawSea(sySeaLevel);
+			writeCentred(sxScreenWidth/2, syScreenHeight/2 - letterSize*3, "Beach Weather");
+			writeCentred(sxScreenWidth/2, syScreenHeight/2, "F to start");
 			if (GetKey(olc::Key::F).bPressed) {
 				gameState = Normal;
-				resetGameVariables();
+				resetGameVariables(false);
 			}
 			return(true);
 		}
@@ -404,11 +504,13 @@ public:
 		}
 
 		// wind event timer
-		windEventCharge += fElapsedTime * windEventRate;
-		if (windEventCharge >= 1.0f) {
-			wind = true;
-			windVelocity = windVelocity * float(1 - 2 * (std::rand() % 2));
-			windEventCharge -= 1.0f;
+		if (raining) {
+			windEventCharge += fElapsedTime * windEventRate;
+			if (windEventCharge >= 1.0f) {
+				wind = true;
+				windVelocity = windVelocity * float(1 - 2 * (std::rand() % 2));
+				windEventCharge -= 1.0f;
+			}
 		}
 
 		// rain event timer
@@ -460,7 +562,25 @@ public:
 			}
 		}
 
+		// loose ladders fall if not on floor, same as player
+		for (auto& pos : looseLadders) {
+			int cxLeft = floor((pos.x - sxCellsOffset) / sxCellWidth);
+			int cxRight = floor((pos.x + sxCellWidth - 1 - sxCellsOffset) / sxCellWidth);
+			int cy = floor((pos.y + syCellHeight / 4 - 1) / syCellHeight);
+			bool leftCanStand = castleGrid[cy + 1][cxLeft] == FullDampCell;
+			bool rightCanStand = castleGrid[cy + 1][cxRight] == FullDampCell;
+			bool onWorldFloor = cy == nyCells - 1;
+			bool canStand = onWorldFloor || leftCanStand || rightCanStand;
+			bool onCellFloor = (int(pos.y + syCellHeight/4 - 1) % syCellHeight) == syCellHeight - 1;
+			bool wouldFall = !canStand || !onCellFloor;
+			if (wouldFall) {
+				pos.y += syPlayerFallSpeed * fElapsedTime;
+			}
+		}
+
 		// tide raises loose ladders
+		// (if I had time, I'd split ladders into fallen and floating, to skip checks
+		// here and for falling)
 		for (auto& pos : looseLadders) {
 			if (pos.y + syCellHeight/4 > sySeaLevel) {
 				pos.y = sySeaLevel - syCellHeight/4;
@@ -481,7 +601,7 @@ public:
 		if (wind) {
 			windWoodPushCharge += windWoodPushRate * fElapsedTime;
 			while (windWoodPushCharge >= 1.0f) {
-				for (olc::vi2d& pos : looseLadders) {
+				for (olc::vf2d& pos : looseLadders) {
 					if (pos.y == sySeaLevel - syCellHeight / 4) {
 						if (windVelocity > 0.0f && pos.x + sxCellsOffset - 1 < sxScreenWidth - 1) {
 							pos.x += 1;
@@ -588,6 +708,7 @@ public:
 		switch (gameState) {
 		case Won:
 			if (GetKey(olc::Key::F).bPressed) {
+				resetGameVariables(true);
 				gameState = Menu;
 			}
 			canGetSand = false;
@@ -598,6 +719,7 @@ public:
 			break;
 		case Drowning:
 			if (GetKey(olc::Key::F).bPressed) {
+				resetGameVariables(true);
 				gameState = Menu;
 			}
 			if (syPlayerY - syPlayerHeight + 1 < syScreenHeight) {
@@ -686,7 +808,35 @@ public:
 			canGetSand = !falling;
 			canGetWater = !falling && nearWater;
 			canGetWood = !falling && (nearTree || nearLooseLadder >= 0);
-			canDump = inBounds && bucket != BucketEmpty;
+			switch (bucket) {
+			case BucketEmpty:
+				canDump = false;
+				break;
+			case BucketSand:
+				canDump = inBounds && castleGrid[cyPlayerY][cxPlayerX] == NonFullCell;
+				break;
+			case BucketDampSand:
+				canDump = inBounds && castleGrid[cyPlayerY][cxPlayerX] != FullDampCell;
+				break;
+			case BucketWood:
+				canDump = inBounds;
+				break;
+			case BucketWater:
+				bool isBurning = false;
+				if (!inBounds) {
+					canDump = false;
+				}
+				else {
+					for (int b = 0; b < sunburnLocations.size(); b++) {
+						if (sunburnLocations[b] == olc::vi2d(cxPlayerX, cyPlayerY)) {
+							isBurning = true;
+							break;
+						}
+					}
+					canDump = castleGrid[cyPlayerY][cxPlayerX] == FullDryCell
+						|| (castleGrid[cyPlayerY][cxPlayerX] == FullDampCell && isBurning);
+				}
+			}
 			if (GetKey(olc::Key::S).bPressed && canGetSand) {
 				if (bucket == BucketWater) {
 					actionState = GettingDampSand;
@@ -720,14 +870,6 @@ public:
 					break;
 				}
 			}
-
-			if (GetKey(olc::Key::R).bPressed) raining = !raining;
-			if (GetKey(olc::Key::B).bPressed) {
-				wind = !wind;
-				windVelocity = windVelocity * float(1 - 2 * (std::rand() % 2));
-			}
-			if (GetKey(olc::Key::T).bPressed) seaRising = !seaRising;
-			if (GetKey(olc::Key::G).bPressed) debug = !debug;
 
 			switch (actionState) {
 			case GettingSand:
@@ -845,59 +987,11 @@ public:
 			FillCircle(sxScreenWidth - sSunRadius - 1, sSunRadius, sSunRadius, olc::YELLOW);
 		}
 
-		// draw THE MOON
-		// tidal force proportional to 1/distance^2
-		// so distance prop 1/height^(1/2),
-		// size prop 1/distance prop height^(1/2);
-		float seaProgress = 1.0f - wySeaLevel / wySeaStart;
-		FillCircle(
-			sxMoonStart + (sxMoonTarget - sxMoonStart)*std::pow(seaProgress, 3.0f),
-			syMoonStart + (syMoonTarget - syMoonStart)*std::pow(seaProgress, 3.0f),
-			sxScreenWidth*seaProgress,
-			olc::WHITE
-		);
+		drawBeach();
 
-		// draw beach
-		FillRect(0, syBeachMax, sxScreenWidth, syScreenHeight - syBeachMax, olc::DARK_YELLOW);
-		DrawLine(0, syBeachMax, sxScreenWidth - 1, syBeachMax, olc::VERY_DARK_YELLOW);
+		drawParticles();
 
-		// draw debug grid lines
-		if (debug) {
-			for (int cx = 0; cx < nxCells; cx++) {
-				int sx = cx * sxCellWidth + sxCellsOffset;
-				DrawLine(sx, 0, sx, syBeachMax, olc::GREY);
-			}
-			for (int cy = 0; cy <= nyCells; cy++) {
-				int sy = cy * syCellHeight;
-				DrawLine(sxCellsOffset, sy, sxScreenWidth - 1, sy, olc::GREY);
-			}
-		}
-
-		// draw particles
-		for (int sx = 0; sx < nxParticles; sx++) {
-			for (int sy = 0; sy < nyParticles; sy++) {
-				switch (particles[sy][sx]) {
-				case DrySand:
-					Draw(sxCellsOffset + sx, sy, olc::YELLOW);
-					break;
-				case DampSand:
-					Draw(sxCellsOffset + sx, sy, olc::DARK_YELLOW);
-					break;
-				}
-			}
-		}
-
-		// draw castle area
-		for (int y = 0; y < nyCells; y++) {
-			for (int x = 0; x < nxCells; x++) {
-				if (castleGrid[y][x] == FullDampCell) {
-					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::VERY_DARK_YELLOW);
-				}
-				if (castleGrid[y][x] == FullDryCell) {
-					DrawLine(sxCellsOffset + sxCellWidth * x, syCellHeight * y, sxCellsOffset + sxCellWidth * (x + 1) - 1, syCellHeight * y, olc::DARK_YELLOW);
-				}
-			}
-		}
+		drawFullCellTops();
 
 		// redraw cells drying out
 		for (int n = 0; n < sunburnLocations.size(); n++) {
@@ -925,15 +1019,9 @@ public:
 			FillRect(sxCellsOffset + sxCellWidth * pos.x, syCellHeight * pos.y + 3*syCrenelHeight, sxCellWidth, syCrenelHeight, olc::RED);
 		}
 
-		// draw cliffs
-		FillRect(0, syCellHeight - syCellHeight/4, sxCellsOffset/2, syBeachMax - syCellHeight, olc::GREY);
-		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset/2, sxCrenelOffset, olc::GREEN);
+		drawCliffs();
 
-		// draw wood pile
-		FillRect(0, syBeachMax - syCellHeight/4, sxCellsOffset, syCellHeight/4, brown);
-		DrawRect(0, syBeachMax - syCellHeight / 4, sxCellsOffset - 1, syCellHeight / 4 - 1, olc::BLACK);
-		FillRect(0, syBeachMax - syCellHeight / 4 - syCellHeight/4, sxCellsOffset, syCellHeight / 4, brown);
-		DrawRect(0, syBeachMax - syCellHeight / 4 - syCellHeight / 4, sxCellsOffset - 1, syCellHeight / 4 - 1, olc::BLACK);
+		drawWoodPile();
 
 		// draw loose ladders
 		for (auto& pos : looseLadders) {
@@ -941,34 +1029,13 @@ public:
 			DrawRect(pos.x, pos.y, sxCellsOffset - 1, syCellHeight / 4 - 1, olc::BLACK);
 		}
 
-		// draw crenellations above player
-		for (int y = 0; y < cyPlayerY + 1; y++) {
-			for (int x = 0; x < nxCells; x++) {
-				if (castleGrid[y][x] == FullDampCell) {
-					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
-					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
-				}
-			}
-		}
+		drawCrenelsBehindPlayer();
 
-		// draw player
-		FillRect(sxPlayerX, syPlayerY - syPlayerHeight + 1, sxPlayerWidth, syPlayerHeight, olc::MAGENTA);
+		drawPlayer();
 
-		// draw crenellations below player
-		for (int y = cyPlayerY + 1; y < nyCells; y++) {
-			for (int x = 0; x < nxCells; x++) {
-				if (castleGrid[y][x] == FullDampCell) {
-					drawCrenel(sxCellsOffset + sxCrenelOffset + sxCellWidth * x, syCellHeight * y);
-					drawCrenel(sxCellsOffset + 3 * sxCrenelOffset + sxCrenelWidth + sxCellWidth * x, syCellHeight * y);
-				}
-			}
-		}
+		drawCrenelsBeforePlayer();
 
-		// draw sea
-		SetPixelBlend(0.7f);
-		SetPixelMode(olc::Pixel::ALPHA);
-		FillRect(0, sySeaLevel, sxScreenWidth, syScreenHeight - sySeaLevel, olc::BLUE);
-		SetPixelMode(olc::Pixel::NORMAL);
+		drawSea(sySeaLevel);
 
 		// rainfall
 		if (wind) {
@@ -1059,8 +1126,6 @@ public:
 		if (gameState == Normal && displayingTideEvent) {
 			writeCentred(sxScreenWidth / 2, syScreenHeight / 2, "The tide is coming in!");
 		}
-
-		DrawString(0, 0, std::to_string(nearDownLadder));
 
 		return true;
 	}

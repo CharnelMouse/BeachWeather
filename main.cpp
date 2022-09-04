@@ -372,8 +372,8 @@ private:
 	}
 
 	void drawCliffs() {
-		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset / 2, syBeachMax - syCellHeight, olc::GREY);
-		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset / 2, sxCrenelOffset, olc::GREEN);
+		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset, syBeachMax - syCellHeight, olc::GREY);
+		FillRect(0, syCellHeight - syCellHeight / 4, sxCellsOffset, sxCrenelOffset, olc::GREEN);
 	}
 
 	void drawWoodPile() {
@@ -432,6 +432,7 @@ public:
 		if (gameState == Menu) {
 			Clear(olc::CYAN);
 			drawBeach();
+			FillCircle(sxScreenWidth - sSunRadius - 1, sSunRadius, sSunRadius, olc::YELLOW);
 			drawParticles();
 			drawFullCellTops();
 			drawCliffs();
@@ -564,17 +565,23 @@ public:
 
 		// loose ladders fall if not on floor, same as player
 		for (auto& pos : looseLadders) {
-			int cxLeft = floor((pos.x - sxCellsOffset) / sxCellWidth);
-			int cxRight = floor((pos.x + sxCellWidth - 1 - sxCellsOffset) / sxCellWidth);
-			int cy = floor((pos.y + syCellHeight / 4 - 1) / syCellHeight);
-			bool leftCanStand = castleGrid[cy + 1][cxLeft] == FullDampCell;
-			bool rightCanStand = castleGrid[cy + 1][cxRight] == FullDampCell;
-			bool onWorldFloor = cy == nyCells - 1;
-			bool canStand = onWorldFloor || leftCanStand || rightCanStand;
-			bool onCellFloor = (int(pos.y + syCellHeight/4 - 1) % syCellHeight) == syCellHeight - 1;
-			bool wouldFall = !canStand || !onCellFloor;
-			if (wouldFall) {
-				pos.y += syPlayerFallSpeed * fElapsedTime;
+			float fallDistance = syPlayerFallSpeed * fElapsedTime;
+			while (fallDistance > 0.0f) {
+				int cxLeft = floor((pos.x - sxCellsOffset) / sxCellWidth);
+				int cxRight = floor((pos.x + sxCellWidth - 1 - sxCellsOffset) / sxCellWidth);
+				int cy = floor((pos.y + syCellHeight / 4 - 1) / syCellHeight);
+				bool leftCanStand = castleGrid[cy + 1][cxLeft] == FullDampCell;
+				bool rightCanStand = castleGrid[cy + 1][cxRight] == FullDampCell;
+				bool onWorldFloor = cy == nyCells - 1;
+				bool canStand = onWorldFloor || leftCanStand || rightCanStand;
+				bool onCellFloor = (int(pos.y + syCellHeight / 4 - 1) % syCellHeight) == syCellHeight - 1;
+				bool wouldFall = !canStand || !onCellFloor;
+				if (!wouldFall || nearUpLadder || nearDownLadder) {
+					fallDistance = 0.0f;
+					break;
+				}
+				pos.y += std::min(1.0f, fallDistance);
+				fallDistance = std::max(0.0f, fallDistance - 1.0f);
 			}
 		}
 
@@ -741,17 +748,25 @@ public:
 			if (GetKey(olc::Key::DOWN).bHeld && nearDownLadder) syPlayerY += syPlayerSpeed * fElapsedTime;
 
 			// falling
-			int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
-			int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
-			int cyInterPlayerY = floor(syPlayerY / syCellHeight);
-			bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == FullDampCell;
-			bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == FullDampCell;
-			bool onWorldFloor = cyInterPlayerY == nyCells - 1;
-			bool canStand = onWorldFloor || leftCanStand || rightCanStand;
-			bool onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
-			bool wouldFall = !canStand || !onCellFloor;
-			if (wouldFall && !nearUpLadder && !nearDownLadder) {
-				syPlayerY += syPlayerFallSpeed * fElapsedTime;
+			float fallDistance = syPlayerFallSpeed * fElapsedTime;
+			bool wouldFall;
+			bool onCellFloor;
+			while (fallDistance > 0.0f) {
+				int cxPlayerLeftX = floor((sxPlayerX - sxCellsOffset) / sxCellWidth);
+				int cxPlayerRightX = floor((sxPlayerX + sxPlayerWidth - 1 - sxCellsOffset) / sxCellWidth);
+				int cyInterPlayerY = floor(syPlayerY / syCellHeight);
+				bool leftCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerLeftX] == FullDampCell;
+				bool rightCanStand = castleGrid[cyInterPlayerY + 1][cxPlayerRightX] == FullDampCell;
+				bool onWorldFloor = cyInterPlayerY == nyCells - 1;
+				bool canStand = onWorldFloor || leftCanStand || rightCanStand;
+				onCellFloor = (int(syPlayerY) % syCellHeight) == syCellHeight - 1;
+				wouldFall = !canStand || !onCellFloor;
+				if (!wouldFall || nearUpLadder || nearDownLadder) {
+					fallDistance = 0.0f;
+					break;
+				}
+				syPlayerY += std::min(1.0f, fallDistance);
+				fallDistance = std::max(0.0f, fallDistance - 1.0f);
 			}
 
 			// final player position / cell

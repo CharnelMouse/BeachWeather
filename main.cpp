@@ -1,6 +1,9 @@
 #define OLC_PGE_APPLICATION
 #include "olcPixelGameEngine.h"
 
+#define OLC_PGEX_SPLASHSCREEN
+#include "olcPGEX_SplashScreen.h"
+
 // fixed by engine
 static const int letterSize = 8;
 
@@ -149,6 +152,8 @@ public:
 	{
 		sAppName = "Beach Weather";
 	}
+
+	olc::SplashScreen splash;
 
 private:
 
